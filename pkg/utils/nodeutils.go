@@ -152,11 +152,16 @@ func AreKubeletConfigsRendered(pool *mcfgv1.MachineConfigPool, client runtimecli
 		return false, fmt.Errorf("failed to unmarshal machine config %s: %w", currentKCMCName, err), diffString
 	}
 
-	encodedKC, err := jsonpath.Get("storage.files[0].contents.source", obj)
+	encodedKC, err := jsonpath.Get(`$.storage.files[? @.path=="/etc/kubernetes/kubelet.conf"].contents.source`, obj)
 	if err != nil {
 		return false, fmt.Errorf("failed to get encoded kubelet config from machine config %s: %w", currentKCMCName, err), diffString
 	}
-	encodedKCStr := encodedKC.(string)
+	v := reflect.ValueOf(encodedKC)
+	if v.Len() == 0 {
+		diffString := fmt.Sprintf("failed to found source of the file /etc/kubernetes/kubelet.conf for KubeletConfig MachineConfig %s", currentKCMCName)
+		return false, nil, diffString
+	}
+	encodedKCStr := v.Index(0).Interface().(string)
 	if encodedKCStr == "" {
 		return false, fmt.Errorf("encoded kubeletconfig %s is empty", currentKCMCName), diffString
 	}
