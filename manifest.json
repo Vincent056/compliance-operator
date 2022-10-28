@@ -1,0 +1,82 @@
+{
+  "name": "Unblock Youku",
+  "version": "4.0.1",
+  "manifest_version": 3,
+  "minimum_chrome_version": "103.0",
+  "default_locale": "en",
+  "description": "__MSG_description__",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "proxy",
+    "declarativeNetRequestWithHostAccess",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/service_worker.mjs",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_icon": "icons/icon19gray.png",
+    "default_title": "Unblock Youku isn't working properly! Visit http://uku.im/faq for solutions."
+  },
+  "options_page": "src/options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "http://www.tudou.com/*"
+      ],
+      "js": [
+        "src/content_scripts/tudou.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "http://play.baidu.com/*"
+      ],
+      "css": [
+        "src/content_scripts/play.baidu.css"
+      ],
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "http://music.163.com/*"
+      ],
+      "js": [
+        "src/content_scripts/music.163.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "http://unblockcn.com/*",
+        "https://unblockcn.com/*",
+        "http://*.unblockcn.com/*",
+        "https://*.unblockcn.com/*",
+        "http://unblockyouku.cn/*",
+        "http://*.unblockyouku.cn/*",
+        "http://724sky.com/*",
+        "http://*.724sky.com/*",
+        "http://tieba.baidu.com/f?kw=unblockcn*",
+        "http://*.tieba.baidu.com/f?kw=unblockcn*"
+      ],
+      "js": [
+        "src/content_scripts/unblockcn.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    }
+  ]
+}

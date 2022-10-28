@@ -1,0 +1,81 @@
+body {
+    width: 32em;
+    display: block;
+    position: relative;
+}
+
+div#wrapper {
+    margin: 10px;
+    padding: 10px;
+}
+
+/* waitlist */
+#waitlist_message {
+    margin-top: 10px;
+    line-height: 150%;
+}
+
+div#waitlist_message {
+    line-height: 150%;
+}
+
+#waitlist_action {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-gap: 10px;
+}
+
+#waitlist_txt_email_message {
+    margin-top: 10px;
+}
+
+/* donation */
+div#support {
+    margin-top: 15px;
+}
+
+#support_message {
+    margin-top: 10px;
+    line-height: 150%;
+}
+
+div#support_message {
+    line-height: 150%;
+}
+
+/* social networks */
+div#social {
+    margin-top: 15px;
+}
+
+div#social-networks {
+    margin: 15px auto;
+    font-size: 110%;
+}
+
+/* mode setting section */
+div#setting {
+    margin-top: 15px;
+}
+
+div#buttons {
+    margin: 15px auto;
+    clear: both;
+    display: inline-block;
+}
+
+div#setting_description tr:last-child {
+    border-bottom: 1px solid #DDDDDD !important;
+    border-bottom: 1px solid #DDDDDD !important;
+}
+
+div.text_block {
+    margin-top: 10px;
+    text-align: center;
+}
+
+/* extra info and links */
+div#version {
+    margin-top: 15px;
+    text-align: center;
+}

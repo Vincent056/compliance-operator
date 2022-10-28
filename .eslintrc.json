@@ -1,0 +1,28 @@
+{
+    "env": {
+        "browser": true,
+        "es2021": true,
+        "webextensions": true,
+        "jquery": true
+    },
+    "extends": [
+        "google"
+    ],
+    "parserOptions": {
+        "ecmaVersion": "latest",
+        "sourceType": "module"
+    },
+    "rules": {
+        "require-jsdoc": "off",
+        "no-multi-str": "off",
+        "max-len": [
+            "error",
+            {
+                "code": 100
+            }
+        ]
+    },
+    "ignorePatterns": [
+        "**/third_party/**"
+    ]
+}

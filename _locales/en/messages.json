@@ -1,0 +1,74 @@
+{
+  "description": {
+    "message": "Helps users access their web services while travelling outside mainland China."
+  },
+  "popup_title": {
+    "message": "Configure Unblock Youku"
+  },
+  "social_title": {
+    "message": "Please Follow Us"
+  },
+  "mode_select": {
+    "message": "Select Operation Mode"
+  },
+  "mode_off": {
+    "message": "Off"
+  },
+  "mode_lite": {
+    "message": "Lite"
+  },
+  "mode_normal": {
+    "message": "Standard"
+  },
+  "mode_off_description": {
+    "message": "Disables all Unblock Youku functionalities."
+  },
+  "mode_lite_description": {
+    "message": "Applies to <abbr id=\"tooltip\" data-toggle=\"tooltip\" data-placement=\"top\" title=\"For example, Bilibili\">only few websites</abbr>, but can work with other proxy settings or software."
+  },
+  "mode_normal_description": {
+    "message": "<strong>Recommended</strong>. Fast, and applicable to most websites."
+  },
+  "faq": {
+    "message": "If you have encountered any issue, please refer to <a href=\"http://uku.im/faq\" target=\"_blank\">the FAQ</a>."
+  },
+  "feedback": {
+    "message": "If you have any questions, please don't hesitate to <a href=\"http://uku.im/feedback\" target=\"_blank\">contact us</a>."
+  },
+  "rating": {
+    "message": "If you find this extension helpful, <a href=\"http://uku.im/reviews\" target=\"_blank\">please help us to rate it</a>."
+  },
+  "sharing": {
+    "message": "Welcome to share it via"
+  },
+  "donation_url": {
+    "message": "https://www.uku.im/index.html"
+  },
+  "support_title": {
+    "message": "We Need Your Donation"
+  },
+  "support_message": {
+    "message": "Please donate to us to make Unblock Youku more usable."
+  },
+  "support_button": {
+    "message": "<i class=\"fa fa-heart\" aria-hidden=\"true\"></i> Donate to us <i class=\"fa fa-heart\" aria-hidden=\"true\"></i>"
+  },
+  "waitlist_title": {
+    "message": "Join to waitlist"
+  },
+  "waitlist_message": {
+    "message": "Please join to our waitlist, be the first in know new features."
+  },
+  "waitlist_button": {
+    "message": "Send"
+  },
+  "waitlist_sent": {
+    "message": "<i class=\"fa fa-check\" aria-hidden=\"true\"></i> E-mail sent! Thank you."
+  },
+  "waitlist_email_blank": {
+    "message": "E-mail is required!"
+  },
+  "waitlist_email_not_valid": {
+    "message": "E-mail must be a valid e-mail address!"
+  }
+}

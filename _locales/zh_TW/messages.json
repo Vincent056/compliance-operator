@@ -1,0 +1,56 @@
+{
+  "description": {
+    "message": "協助海外華人解除優酷、土豆等網站的存取限制（大陸使用者無需安裝此擴充套件）"
+  },
+  "popup_title": {
+    "message": "Unblock Youku 設定"
+  },
+  "social_title": {
+    "message": "歡迎關註我們"
+  },
+  "mode_select": {
+    "message": "程式執行模式"
+  },
+  "mode_off": {
+    "message": "關閉模式"
+  },
+  "mode_lite": {
+    "message": "精簡模式"
+  },
+  "mode_normal": {
+    "message": "標準模式"
+  },
+  "mode_off_description": {
+    "message": "關閉 Unblock Youku 所有功能"
+  },
+  "mode_lite_description": {
+    "message": "僅對<abbr id=\"tooltip\" data-toggle=\"tooltip\" data-placement=\"top\" title=\"例如 Bilibili\">個別網站</abbr>起效，但可與其它代理同時使用"
+  },
+  "mode_normal_description": {
+    "message": "<strong>推薦使用</strong>。連線速度較快，支援網站數量最多"
+  },
+  "faq": {
+    "message": "如果您在使用過程中遇到任何問題，<a href=\"http://uku.im/faq\" target=\"_blank\">請查看 FAQ</a>"
+  },
+  "feedback": {
+    "message": "如遇到問題或有任何建議，<a href=\"http://uku.im/feedback\" target=\"_blank\">歡迎聯絡我們</a>"
+  },
+  "rating": {
+    "message": "如您覺得這個擴充套件好用，<a href=\"http://uku.im/reviews\" target=\"_blank\">請幫我們評分</a>"
+  },
+  "sharing": {
+    "message": "歡迎分享至"
+  },
+  "donation_url": {
+    "message": "https://www.uku.im/index_zht.html"
+  },
+  "support_title": {
+    "message": "我們需要您的捐款"
+  },
+  "support_message": {
+    "message": "請幫助 Unblock Youku 長久穩定和免費地運行下去"
+  },
+  "support_button": {
+    "message": "<i class=\"fa fa-heart\" aria-hidden=\"true\"></i> 向我們捐款 <i class=\"fa fa-heart\" aria-hidden=\"true\"></i>"
+  }
+}
