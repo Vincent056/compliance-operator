@@ -13,6 +13,18 @@ import * as Icon from './modules/_icon.mjs';
   $('div#waitlist strong').html(getMsg('waitlist_title'));
   $('p#waitlist_message').html(getMsg('waitlist_message'));
   $('button#waitlist_button').html(getMsg('waitlist_button'));
+  $('#waitlist_txt_email').prop('placeholder', getMsg('waitlist_txt_email_placeholder'));
+
+  chrome.storage.sync.get(['user'], function(items) {
+    if(items.hasOwnProperty('user')) {
+      items = JSON.parse(items.user)
+      $('#waitlist').hide();
+      $('#login').hide();
+      $('div#loggedin strong').html(getMsg('loggedin_welcome') + ' ' + items.username);
+      $('#loggedin_message').html(getMsg('loggedin_plan') + ' <b>' + (items.state == 1) ? 'Free user' : (items.state == 2) ? 'Pro user' : 'Error!' + '</b>');
+      $('#loggedin').show();
+    }
+  });
 
   $('#waitlist_button').on('click', async function() {
     if($('#waitlist_txt_email').val() != '') {
@@ -38,6 +50,55 @@ import * as Icon from './modules/_icon.mjs';
     } else {
       $('#waitlist_txt_email_message').removeClass().addClass('alert alert-danger').html(getMsg('waitlist_email_blank')).show();
     }
+  });
+
+  $('div#login strong').html(getMsg('login_title'));
+  $('p#login_message').html(getMsg('login_message'));
+  $('button#login_button').html(getMsg('login_button'));
+  $('#login_txt_email').prop('placeholder', getMsg('login_txt_email_placeholder'));
+  $('#login_txt_password').prop('placeholder', getMsg('login_txt_password_placeholder'));
+
+  $('#login_button').on('click', async function() {
+    if($('#login_txt_email').val() != '') {
+      if($('#login_txt_password').val() != '') {
+        const rawResponse = await fetch('https://unblock-backend.54nft.io/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({user: $('#login_txt_email').val(), password: $('#login_txt_password').val()})
+        });
+        const content = await rawResponse.json();
+        if(!content.success) {
+          $('#login_txt_email_message').removeClass().addClass('alert alert-danger').html(content.error).show();
+        }
+        if(content.success) {
+          chrome.storage.sync.set({'user': JSON.stringify(content.result[0])}, function() {
+            $('#waitlist').hide();
+            $('#login').hide();
+            $('#login_txt_email').val('');
+            $('#login_txt_password').val('');
+            $('div#loggedin strong').html(getMsg('loggedin_welcome') + ' ' + content.result[0].username);
+            $('#loggedin_message').html(getMsg('loggedin_plan') + ' <b>' + (content.result[0].state == 1) ? 'Free user' : (content.result[0].state == 2) ? 'Pro user' : 'Error!' + '</b>');
+            $('#login_txt_email_message').hide();
+            $('#loggedin').show();
+          });
+        }
+      } else {
+        $('#login_txt_email_message').removeClass().addClass('alert alert-danger').html(getMsg('login_password_blank')).show();
+      }
+    } else {
+      $('#login_txt_email_message').removeClass().addClass('alert alert-danger').html(getMsg('login_email_blank')).show();
+    }
+  });
+
+  $('#loggedin_button').on('click', async function() {
+    chrome.storage.sync.remove(['user']);
+    $('div#loggedin strong').html('');
+    $('#loggedin_message').html('');
+    $('#loggedin').hide();
+    $('#waitlist').show();
+    $('#login').show();
   });
 
   $('div#support strong').html(getMsg('support_title'));

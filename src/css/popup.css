@@ -29,6 +29,26 @@ div#waitlist_message {
     margin-top: 10px;
 }
 
+/* login */
+#login_message {
+    margin-top: 10px;
+    line-height: 150%;
+}
+
+div#login_message {
+    line-height: 150%;
+}
+
+#login_action {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-gap: 10px;
+}
+
+#login_txt_email_message {
+    margin-top: 10px;
+}
+
 /* donation */
 div#support {
     margin-top: 15px;

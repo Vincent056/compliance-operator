@@ -59,6 +59,9 @@
   "waitlist_message": {
     "message": "Please join to our waitlist, be the first in know new features."
   },
+  "waitlist_txt_email_placeholder": {
+    "message": "Type your e-mail..."
+  },
   "waitlist_button": {
     "message": "Send"
   },
@@ -70,5 +73,32 @@
   },
   "waitlist_email_not_valid": {
     "message": "E-mail must be a valid e-mail address!"
+  },
+  "login_title": {
+    "message": "or Log in with your credentials"
+  },
+  "login_message": {
+    "message": "Type your username or e-mail and your password."
+  },
+  "login_txt_email_placeholder": {
+    "message": "Your Username or E-mail..."
+  },
+  "login_txt_password_placeholder": {
+    "message": "Your Password..."
+  },
+  "login_button": {
+    "message": "Log in now"
+  },
+  "login_email_blank": {
+    "message": "Username or E-mail is required!"
+  },
+  "login_password_blank": {
+    "message": "Password is required!"
+  },
+  "loggedin_welcome": {
+    "message": "Welcome!"
+  },
+  "loggedin_plan": {
+    "message": "Actual plan:"
   }
 }

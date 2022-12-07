@@ -234,6 +234,9 @@ export const PROXY_URLS = [
   'http://www.iqiyi.com/dongman/',
   'https://www.iqiyi.com/',
 
+  'http://www.tuishujun.com/',
+  'https://www.tuishujun.com/',
+  
   // LETV https://github.com/Unblocker/Unblock-Youku/issues/590
   'http://36.110.222.105/*',
   'http://36.110.222.119/*',

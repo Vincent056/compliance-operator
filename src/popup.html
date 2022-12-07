@@ -16,14 +16,35 @@
 <body>
     <div id="wrapper" class="container-fluid">
         <div id="waitlist">
-            <div><strong></strong> <span class="label label-success">NEW</span></div>
+            <div><strong></strong></div>
             <div class="text-center">
                 <p id="waitlist_message"></p>
                 <div id="waitlist_action">
-                    <input type="email" id="waitlist_txt_email" class="form-control" placeholder="Type your e-mail..." />
+                    <input type="email" id="waitlist_txt_email" class="form-control" placeholder="" />
                     <input type="button" class="btn btn-primary" id="waitlist_button" value="Send" />
                 </div>
                 <div id="waitlist_txt_email_message"></div>
+            </div>
+        </div>
+        <div id="login">
+            <div><strong></strong> <span class="label label-success">NEW</span></div>
+            <div class="text-center">
+                <p id="login_message"></p>
+                <div id="login_action">
+                    <input type="text" id="login_txt_email" class="form-control" placeholder="" />
+                    <input type="password" id="login_txt_password" class="form-control" placeholder="" />
+                    <input type="button" class="btn btn-primary" id="login_button" value="Log in now" />
+                </div>
+                <div id="login_txt_email_message"></div>
+            </div>
+        </div>
+        <div id="loggedin" style="display: none;">
+            <div><strong>Welcome!</strong> </div>
+            <div class="text-center">
+                <p id="loggedin_message"></p>
+                <div id="loggedin_action">
+                    <input type="button" class="btn btn-secondary" id="loggedin_button" value="Disconnect" />
+                </div>
             </div>
         </div>
         <div id="support">
