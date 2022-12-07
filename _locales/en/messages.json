@@ -86,6 +86,9 @@
   "login_txt_password_placeholder": {
     "message": "Your Password..."
   },
+  "login_txt_register": {
+    "message": "If you don't have an account yet, <a href=\"https://unblock.54nft.io/register\" target=\"_blank\">register here</a>"
+  },
   "login_button": {
     "message": "Log in now"
   },

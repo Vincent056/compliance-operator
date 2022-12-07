@@ -54,6 +54,7 @@ import * as Icon from './modules/_icon.mjs';
 
   $('div#login strong').html(getMsg('login_title'));
   $('p#login_message').html(getMsg('login_message'));
+  $('#login_txt_register').html(getMsg('login_txt_register'));
   $('button#login_button').html(getMsg('login_button'));
   $('#login_txt_email').prop('placeholder', getMsg('login_txt_email_placeholder'));
   $('#login_txt_password').prop('placeholder', getMsg('login_txt_password_placeholder'));

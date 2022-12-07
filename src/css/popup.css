@@ -45,6 +45,10 @@ div#login_message {
     grid-gap: 10px;
 }
 
+#login_txt_register {
+    grid-column: span 3;
+}
+
 #login_txt_email_message {
     margin-top: 10px;
 }
