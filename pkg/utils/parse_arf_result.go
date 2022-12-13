@@ -476,7 +476,7 @@ func ParseResultsFromContentAndXccdf(scheme *runtime.Scheme, scanName string, na
 
 		instructions := GetInstructionsForRule(resultRule, questionsTable)
 		ruleValues := getValueListUsedForRule(resultRule, ovalTestVarTable, defTable, valuesList)
-		resCheck, err := newComplianceCheckResult(result, resultRule, ruleIDRef, instructions, scanName, namespace, ruleValues, manualRules)
+		resCheck, err := newComplianceCheckResult(result, resultRule, ruleIDRef, instructions, scanName, namespace, ruleValues, manualRules, valuesList)
 		if err != nil {
 			continue
 		}
@@ -501,7 +501,7 @@ func ParseResultsFromContentAndXccdf(scheme *runtime.Scheme, scanName string, na
 }
 
 // Returns a new complianceCheckResult if the check data is usable
-func newComplianceCheckResult(result *xmlquery.Node, rule *xmlquery.Node, ruleIdRef, instructions, scanName, namespace string, ruleValues []string, manualRules []string) (*compv1alpha1.ComplianceCheckResult, error) {
+func newComplianceCheckResult(result *xmlquery.Node, rule *xmlquery.Node, ruleIdRef, instructions, scanName, namespace string, ruleValues []string, manualRules []string, valuesList map[string]string) (*compv1alpha1.ComplianceCheckResult, error) {
 	name := nameFromId(scanName, ruleIdRef)
 	mappedStatus, err := mapComplianceCheckResultStatus(result)
 	if err != nil {
@@ -527,6 +527,22 @@ func newComplianceCheckResult(result *xmlquery.Node, rule *xmlquery.Node, ruleId
 		annotations[compv1alpha1.RuleHideTagAnnotationKey] = "true"
 	}
 
+	var renderError error
+
+	description, err := complianceCheckResultDescription(rule, valuesList)
+	if err != nil {
+		renderError = fmt.Errorf("error rendering description: %w", err)
+	}
+	rationale, err := complianceCheckResultRationale(rule, valuesList)
+	if err != nil {
+		err = fmt.Errorf("error rendering rationale: %w", err)
+		if renderError != nil {
+			renderError = fmt.Errorf("%w; %v", renderError, err)
+		} else {
+			renderError = err
+		}
+	}
+
 	return &compv1alpha1.ComplianceCheckResult{
 		ObjectMeta: v1.ObjectMeta{
 			Name:        name,
@@ -537,10 +553,11 @@ func newComplianceCheckResult(result *xmlquery.Node, rule *xmlquery.Node, ruleId
 		Status:       mappedStatus,
 		Severity:     mappedSeverity,
 		Instructions: instructions,
-		Description:  complianceCheckResultDescription(rule),
+		Description:  description,
+		Rationale:    rationale,
 		Warnings:     GetWarningsForRule(rule),
 		ValuesUsed:   ruleValues,
-	}, nil
+	}, renderError
 }
 
 func getSafeText(nptr *xmlquery.Node, elem string) string {
@@ -552,12 +569,32 @@ func getSafeText(nptr *xmlquery.Node, elem string) string {
 	return elemNode.InnerText()
 }
 
-func complianceCheckResultDescription(rule *xmlquery.Node) string {
+func complianceCheckResultDescription(rule *xmlquery.Node, valuesList map[string]string) (string, error) {
 	title := getSafeText(rule, "xccdf-1.2:title")
 	if title != "" {
 		title = title + "\n"
 	}
-	return title + getSafeText(rule, "xccdf-1.2:rationale")
+	description := rule.SelectElement("xccdf-1.2:description")
+	if description != nil {
+		descriptionRendered, _, err := RenderValues(XmlNodeAsMarkdownPreRender(description, true), valuesList)
+		if err != nil {
+			return title + "", fmt.Errorf("error rendering description: %v", err)
+		}
+		return title + descriptionRendered, nil
+	}
+	return title + "", nil
+}
+
+func complianceCheckResultRationale(rule *xmlquery.Node, valuesList map[string]string) (string, error) {
+	rationale := rule.SelectElement("xccdf-1.2:rationale")
+	if rationale != nil {
+		rationaleRendered, _, err := RenderValues(XmlNodeAsMarkdownPreRender(rationale, true), valuesList)
+		if err != nil {
+			return "", fmt.Errorf("error rendering rationale: %v", err)
+		}
+		return rationaleRendered, nil
+	}
+	return "", nil
 }
 
 func GetWarningsForRule(rule *xmlquery.Node) []string {

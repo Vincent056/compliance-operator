@@ -18,6 +18,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   default value. `ScanSettingBindings` without a `settingRef` will now use the
   `default` `ScanSetting`.
 
+- Fixes an [issue](https://issues.redhat.com/browse/OCPBUGS-4615) where
+  `ComplianceCheckResult` objects does not have correct descriptions, we
+  corrected the descriptions, and also added a new `rationale` field to
+  `ComplianceCheckResult` objects.
+
 ### Internal Changes
 
 - Added the ability to hide compliance check result for helper rule, we will
