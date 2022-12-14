@@ -19,6 +19,15 @@ type NonRetriableCtrlError struct {
 	customHandler ErrorHandler
 }
 
+// Timeout Error
+type TimeoutError struct {
+	err error
+}
+
+func (t TimeoutError) Error() string {
+	return t.err.Error()
+}
+
 func (cerr NonRetriableCtrlError) Error() string {
 	return cerr.err.Error()
 }
@@ -49,6 +58,13 @@ func NewNonRetriableCtrlError(errorFmt string, args ...interface{}) *NonRetriabl
 	return &NonRetriableCtrlError{
 		canRetry: false,
 		err:      fmt.Errorf(errorFmt, args...),
+	}
+}
+
+// NewTimeoutError creates an error with the RetriableCtrlError interface
+func NewTimeoutError(errorFmt string, args ...interface{}) *TimeoutError {
+	return &TimeoutError{
+		err: fmt.Errorf(errorFmt, args...),
 	}
 }
 

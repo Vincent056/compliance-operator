@@ -2,8 +2,9 @@ package v1alpha1
 
 import (
 	"errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -204,6 +205,10 @@ type ComplianceScanSettings struct {
 	// for the scanner container and 200Mi memory with 100m CPU for the api-resource-collector
 	// container).
 	ScanLimits map[corev1.ResourceName]resource.Quantity `json:"scanLimits,omitempty"`
+
+	// Timeout is the maximum amount of time the scan can run. If the scan
+	// hasn't finished by then, it will be aborted.
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // ComplianceScanSpec defines the desired state of ComplianceScan

@@ -1,21 +1,27 @@
 package compliancescan
 
 import (
+	"bytes"
 	"context"
 	goerrors "errors"
 	"fmt"
+	"io"
 	"math"
-	ctrl "sigs.k8s.io/controller-runtime"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -61,22 +67,37 @@ func (r *ReconcileComplianceScan) SetupWithManager(mgr ctrl.Manager) error {
 // Add creates a new ComplianceScan Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo) error {
-	return add(mgr, newReconciler(mgr, met, si))
+	return add(mgr, met, si)
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo) reconcile.Reconciler {
+func newReconciler(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo) (reconcile.Reconciler, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("couldn't get config: %w", err)
+	}
+
+	cslient, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create client: %w", err)
+	}
+
 	return &ReconcileComplianceScan{
 		Client:         mgr.GetClient(),
+		ClientSet:      cslient,
 		Scheme:         mgr.GetScheme(),
 		Recorder:       mgr.GetEventRecorderFor("scanctrl"),
 		Metrics:        met,
 		schedulingInfo: si,
-	}
+	}, nil
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo) error {
+	r, err := newReconciler(mgr, met, si)
+	if err != nil {
+		return err
+	}
 	// Create a new controller
 	c, err := controller.New("compliancescan-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -99,10 +120,11 @@ var _ reconcile.Reconciler = &ReconcileComplianceScan{}
 type ReconcileComplianceScan struct {
 	// This Client, initialized using mgr.Client() above, is a split Client
 	// that reads objects from the cache and writes to the apiserver
-	Client   client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	Metrics  *metrics.Metrics
+	Client    client.Client
+	ClientSet *kubernetes.Clientset
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
+	Metrics   *metrics.Metrics
 	// helps us schedule platform scans on the nodes labeled for the
 	// compliance operator's control plane
 	schedulingInfo utils.CtlplaneSchedulingInfo
@@ -683,20 +705,20 @@ func (r *ReconcileComplianceScan) deleteResultConfigMaps(instance *compv1alpha1.
 }
 
 // returns true if the pod is still running, false otherwise
-func isPodRunningInNode(r *ReconcileComplianceScan, scanInstance *compv1alpha1.ComplianceScan, node *corev1.Node, logger logr.Logger) (bool, error) {
+func isPodRunningInNode(r *ReconcileComplianceScan, scanInstance *compv1alpha1.ComplianceScan, node *corev1.Node, timeout time.Duration, logger logr.Logger) (bool, error) {
 	podName := getPodForNodeName(scanInstance.Name, node.Name)
-	return isPodRunning(r, podName, common.GetComplianceOperatorNamespace(), logger)
+	return isPodRunning(r, podName, common.GetComplianceOperatorNamespace(), timeout, logger)
 }
 
 // returns true if the pod is still running, false otherwise
-func isPlatformScanPodRunning(r *ReconcileComplianceScan, scanInstance *compv1alpha1.ComplianceScan, logger logr.Logger) (bool, error) {
+func isPlatformScanPodRunning(r *ReconcileComplianceScan, scanInstance *compv1alpha1.ComplianceScan, timeout time.Duration, logger logr.Logger) (bool, error) {
 	logger.Info("Retrieving platform scan pod.", "Name", scanInstance.Name+"-"+PlatformScanName)
 
 	podName := getPodForNodeName(scanInstance.Name, PlatformScanName)
-	return isPodRunning(r, podName, common.GetComplianceOperatorNamespace(), logger)
+	return isPodRunning(r, podName, common.GetComplianceOperatorNamespace(), timeout, logger)
 }
 
-func isPodRunning(r *ReconcileComplianceScan, podName, namespace string, logger logr.Logger) (bool, error) {
+func isPodRunning(r *ReconcileComplianceScan, podName, namespace string, timeout time.Duration, logger logr.Logger) (bool, error) {
 	podlogger := logger.WithValues("Pod.Name", podName)
 	foundPod := &corev1.Pod{}
 	err := r.Client.Get(context.TODO(), types.NamespacedName{Name: podName, Namespace: namespace}, foundPod)
@@ -730,6 +752,51 @@ func isPodRunning(r *ReconcileComplianceScan, podName, namespace string, logger 
 
 	// the pod is still running or being created etc
 	podlogger.Info("Pod still running")
+
+	// if timeout is not set, we don't check for timeout
+	if timeout == time.Duration(0) {
+		return true, nil
+	}
+
+	// get last log line from the pod
+	podLogOpts := corev1.PodLogOptions{
+		TailLines: func() *int64 { i := int64(1); return &i }(),
+		Container: OpenSCAPScanContainerName,
+		SinceTime: &metav1.Time{Time: time.Now().Add(-timeout)},
+	}
+
+	if r.ClientSet == nil {
+		podlogger.Info("Cannot get logs, clientset is nil")
+		return true, nil
+	}
+
+	req := r.ClientSet.CoreV1().Pods(namespace).GetLogs(podName, &podLogOpts)
+	podLogs, err := req.Stream(context.Background())
+
+	if err != nil {
+		if strings.Contains(err.Error(), "PodInitializing") || strings.Contains(err.Error(), "scanner is not valid") {
+			podlogger.Info("Scanner Pod is not ready to stream logs yet")
+			return true, nil
+		}
+		podlogger.Error(err, "Cannot open stream to pod logs")
+		return true, err
+	}
+	defer podLogs.Close()
+	buf := new(bytes.Buffer)
+	_, err = io.Copy(buf, podLogs)
+	if err != nil {
+		podlogger.Error(err, "error in copy information from podLogs to buf")
+		return true, err
+	}
+	str := buf.String()
+
+	if str != "" {
+		// new timeout error
+		timeoutErr := common.NewTimeoutError("Timeout reached while waiting for the scan to finish in the pod: %s", podName)
+		podlogger.Error(timeoutErr, "timeout: %s", timeout.String())
+		return true, timeoutErr
+	}
+
 	return true, nil
 }
 

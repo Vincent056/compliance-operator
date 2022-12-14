@@ -5,6 +5,7 @@ import (
 	goerrors "errors"
 	"fmt"
 	"strings"
+	"time"
 
 	compv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/common"
@@ -146,10 +147,21 @@ func (nh *nodeScanTypeHandler) createScanWorkload() error {
 }
 
 func (nh *nodeScanTypeHandler) handleRunningScan() (bool, error) {
+	// scan.Spec.ComplianceScanSettings.Timeout is in string format, e.g. "1h30m"
+	// so we need to parse it
+	timeoutVal := time.Duration(0)
+	var err error
+	if nh.scan.Spec.ComplianceScanSettings.Timeout != "" {
+		timeoutVal, err = time.ParseDuration(nh.scan.Spec.ComplianceScanSettings.Timeout)
+		if err != nil {
+			return true, fmt.Errorf("couldn't parse timeout: %w", err)
+		}
+	}
 	for idx := range nh.nodes {
 		node := &nh.nodes[idx]
 		var unschedulableErr *podUnschedulableError
-		running, err := isPodRunningInNode(nh.r, nh.scan, node, nh.l)
+		var timeoutErr *common.TimeoutError
+		running, err := isPodRunningInNode(nh.r, nh.scan, node, timeoutVal, nh.l)
 		if errors.IsNotFound(err) {
 			// Let's go back to the previous state and make sure all the nodes are covered.
 			nh.l.Info("Phase: Running: A pod is missing. Going to state LAUNCHING to make sure we launch it",
@@ -182,6 +194,15 @@ func (nh *nodeScanTypeHandler) handleRunningScan() (bool, error) {
 
 			// We're good, the CM that tells us about this error is already there
 			// let's continue to check the next pod
+		} else if goerrors.As(err, &timeoutErr) {
+			nh.l.Error(err, "Timeout while waiting for the Node scan pod to be finished. Terminating the pod")
+			// We need to delete the pod, otherwise it will be stuck in the running state
+			// and the scan will never finish
+			err = nh.r.deleteScanPods(nh.scan, []corev1.Node{*node}, nh.l)
+			if err != nil {
+				nh.l.Error(err, "Couldn't delete the scan pod")
+				return true, fmt.Errorf("couldn't delete the scan pod: %w", err)
+			}
 		} else if err != nil {
 			return true, err
 		}
@@ -322,7 +343,15 @@ func (ph *platformScanTypeHandler) createScanWorkload() error {
 }
 
 func (ph *platformScanTypeHandler) handleRunningScan() (bool, error) {
-	running, err := isPlatformScanPodRunning(ph.r, ph.scan, ph.l)
+	timeoutVal := time.Duration(0)
+	var err error
+	if ph.scan.Spec.ComplianceScanSettings.Timeout != "" {
+		timeoutVal, err = time.ParseDuration(ph.scan.Spec.ComplianceScanSettings.Timeout)
+		if err != nil {
+			return true, fmt.Errorf("couldn't parse timeout: %w", err)
+		}
+	}
+	running, err := isPlatformScanPodRunning(ph.r, ph.scan, timeoutVal, ph.l)
 	if errors.IsNotFound(err) {
 		// Let's go back to the previous state and make sure all the nodes are covered.
 		ph.l.Info("Phase: Running: The platform scan pod is missing. Going to state LAUNCHING to make sure we launch it",
@@ -334,6 +363,13 @@ func (ph *platformScanTypeHandler) handleRunningScan() (bool, error) {
 		}
 		return true, nil
 	} else if err != nil {
+		var timeoutErr *common.TimeoutError
+		if goerrors.As(err, timeoutErr) {
+			ph.l.Error(err, "Timeout while waiting for the platform scan pod to be finished. Terminating the pod")
+			// We need to delete the pod, otherwise it will be stuck in the running state
+			// and the scan will never finish
+			err = ph.r.deletePlatformScanPod(ph.scan, ph.l)
+		}
 		return true, err
 	}
 	return running, nil

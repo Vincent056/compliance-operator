@@ -101,6 +101,7 @@ rules:
       - configmaps
       - pods
       - secrets
+      - pods/log
     verbs:
       - get
       - list
