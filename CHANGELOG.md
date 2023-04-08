@@ -18,6 +18,29 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Internal Changes
 
+-
+
+### Deprecations
+
+-
+
+### Removals
+
+-
+
+### Security
+
+-
+
+
+## [1.0.0] - 2023-04-08
+
+The Compliance Operator is now stable and follows semantic versioning rules. No
+backwards incompatible changes were made between version 0.1.61 and 1.0.0 to
+allow for smoother upgrades.
+
+### Internal Changes
+
 - Fix openscap image substitution in Makefile so that the correct image is used.
 
 - Fix github operator image workflow to listen to the master branch, added
@@ -33,10 +56,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Added documentation on how to run platform scan on HyperShift Management
   Cluster in `doc/usage.md`.
 
-### Deprecations
-
--
-
 ### Removals
 
 - The `compliance_scan_error_total` metric was designed to count individual
@@ -46,10 +65,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   practices](https://prometheus.io/docs/practices/naming/#labels). The error
   in the metric has been removed to reduce cardinality. Please see the [bug
   report](https://issues.redhat.com/browse/OCPBUGS-1803) for more details.
-
-### Security
-
--
 
 
 ## [0.1.61] - 2023-02-08

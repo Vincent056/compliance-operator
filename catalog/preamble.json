@@ -13,8 +13,8 @@
     "package": "compliance-operator",
     "entries": [
         {
-            "name": "compliance-operator.v0.1.61",
-            "skipRange": ">=0.1.17 <0.1.61"
+            "name": "compliance-operator.v1.0.0",
+            "skipRange": ">=0.1.17 <1.0.0"
         }
     ]
 }
