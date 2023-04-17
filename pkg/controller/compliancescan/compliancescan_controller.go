@@ -4,6 +4,7 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"io/ioutil"
 	"math"
 	"strings"
 	"time"
@@ -12,8 +13,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -62,14 +66,15 @@ func (r *ReconcileComplianceScan) SetupWithManager(mgr ctrl.Manager) error {
 
 // Add creates a new ComplianceScan Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo) error {
-	return add(mgr, newReconciler(mgr, met, si))
+func Add(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo, kubeClient *kubernetes.Clientset) error {
+	return add(mgr, newReconciler(mgr, met, si, kubeClient))
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo) reconcile.Reconciler {
+func newReconciler(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo, kubeClient *kubernetes.Clientset) reconcile.Reconciler {
 	return &ReconcileComplianceScan{
 		Client:         mgr.GetClient(),
+		ClientSet:      kubeClient,
 		Scheme:         mgr.GetScheme(),
 		Recorder:       mgr.GetEventRecorderFor("scanctrl"),
 		Metrics:        met,
@@ -101,10 +106,11 @@ var _ reconcile.Reconciler = &ReconcileComplianceScan{}
 type ReconcileComplianceScan struct {
 	// This Client, initialized using mgr.Client() above, is a split Client
 	// that reads objects from the cache and writes to the apiserver
-	Client   client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	Metrics  *metrics.Metrics
+	Client    client.Client
+	ClientSet *kubernetes.Clientset
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
+	Metrics   *metrics.Metrics
 	// helps us schedule platform scans on the nodes labeled for the
 	// compliance operator's control plane
 	schedulingInfo utils.CtlplaneSchedulingInfo
@@ -116,6 +122,7 @@ type ReconcileComplianceScan struct {
 //+kubebuilder:rbac:groups="",resources=persistentvolumeclaims,persistentvolumes,verbs=watch,create,get,list,delete
 //+kubebuilder:rbac:groups="",resources=pods,configmaps,events,verbs=create,get,list,watch,patch,update,delete,deletecollection
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=create,get,list,update,watch,delete
+//+kubebuilder:rbac:groups="",resources=nodes,nodes/proxy,verbs=get,list,watch
 //+kubebuilder:rbac:groups=apps,resources=replicasets,deployments,verbs=get,list,watch,create,update,delete
 //+kubebuilder:rbac:groups=compliance.openshift.io,resources=compliancescans,verbs=create,watch,patch,get,list
 //+kubebuilder:rbac:groups=compliance.openshift.io,resources=*,verbs=*
@@ -215,6 +222,7 @@ func (r *ReconcileComplianceScan) validate(instance *compv1alpha1.ComplianceScan
 			instanceCopy.Status.RemainingRetries = instance.Spec.MaxRetryOnTimeout
 		}
 		instanceCopy.Status.Phase = compv1alpha1.PhasePending
+		instanceCopy.Status.StartTimestamp = &metav1.Time{Time: time.Now()}
 		instanceCopy.Status.SetConditionPending()
 		updateErr := r.Client.Status().Update(context.TODO(), instanceCopy)
 		if updateErr != nil {
@@ -240,6 +248,7 @@ func (r *ReconcileComplianceScan) validate(instance *compv1alpha1.ComplianceScan
 		instanceCopy.Status.Result = compv1alpha1.ResultError
 		instanceCopy.Status.ErrorMessage = fmt.Sprintf("Scan type '%s' is not valid", instance.Spec.ScanType)
 		instanceCopy.Status.Phase = compv1alpha1.PhaseDone
+		instanceCopy.Status.EndTimestamp = &metav1.Time{Time: time.Now()}
 		instanceCopy.Status.SetConditionInvalid()
 		updateErr := r.Client.Status().Update(context.TODO(), instanceCopy)
 		if updateErr != nil {
@@ -270,6 +279,7 @@ func (r *ReconcileComplianceScan) validate(instance *compv1alpha1.ComplianceScan
 		instanceCopy.Status.ErrorMessage = fmt.Sprintf("Error parsing RawResultsStorageSize: %s", err)
 		instanceCopy.Status.Result = compv1alpha1.ResultError
 		instanceCopy.Status.Phase = compv1alpha1.PhaseDone
+		instanceCopy.Status.EndTimestamp = &metav1.Time{Time: time.Now()}
 		instanceCopy.Status.SetConditionInvalid()
 		err := r.Client.Status().Update(context.TODO(), instanceCopy)
 		if err != nil {
@@ -284,11 +294,12 @@ func (r *ReconcileComplianceScan) validate(instance *compv1alpha1.ComplianceScan
 
 func (r *ReconcileComplianceScan) phasePendingHandler(instance *compv1alpha1.ComplianceScan, logger logr.Logger) (reconcile.Result, error) {
 	logger.Info("Phase: Pending")
-
 	// Remove annotation if needed
 	if instance.NeedsRescan() {
 		instanceCopy := instance.DeepCopy()
 		delete(instanceCopy.Annotations, compv1alpha1.ComplianceScanRescanAnnotation)
+		delete(instanceCopy.Annotations, compv1alpha1.ComplianceScanTimeoutAnnotation)
+		delete(instanceCopy.Annotations, compv1alpha1.ComplianceScanEndTimestampAnnotation)
 		err := r.Client.Update(context.TODO(), instanceCopy)
 		return reconcile.Result{}, err
 	}
@@ -296,6 +307,8 @@ func (r *ReconcileComplianceScan) phasePendingHandler(instance *compv1alpha1.Com
 	if instance.NeedsTimeoutRescan() {
 		instanceCopy := instance.DeepCopy()
 		delete(instanceCopy.Annotations, compv1alpha1.ComplianceScanTimeoutAnnotation)
+		delete(instanceCopy.Annotations, compv1alpha1.ComplianceScanTimeoutAnnotation)
+		delete(instanceCopy.Annotations, compv1alpha1.ComplianceScanEndTimestampAnnotation)
 		err := r.Client.Update(context.TODO(), instanceCopy)
 		return reconcile.Result{}, err
 	}
@@ -303,6 +316,8 @@ func (r *ReconcileComplianceScan) phasePendingHandler(instance *compv1alpha1.Com
 	// Update the scan instance, the next phase is running
 	instance.Status.Phase = compv1alpha1.PhaseLaunching
 	instance.Status.Result = compv1alpha1.ResultNotAvailable
+	instance.Status.StartTimestamp = &metav1.Time{Time: time.Now()}
+	instance.Status.EndTimestamp = nil
 	err := r.Client.Status().Update(context.TODO(), instance)
 	if err != nil {
 		logger.Error(err, "Cannot update the status")
@@ -355,6 +370,11 @@ func (r *ReconcileComplianceScan) phaseLaunchingHandler(h scanTypeHandler, logge
 		return reconcile.Result{}, err
 	}
 
+	if err = r.handleRuntimeKubeletConfig(scan, logger); err != nil {
+		logger.Error(err, "Cannot handle runtime kubelet config")
+		return reconcile.Result{}, err
+	}
+
 	if err = h.createScanWorkload(); err != nil {
 		if !common.IsRetriable(err) {
 			// Surface non-retriable errors to the CR
@@ -363,6 +383,7 @@ func (r *ReconcileComplianceScan) phaseLaunchingHandler(h scanTypeHandler, logge
 			scanCopy.Status.ErrorMessage = err.Error()
 			scanCopy.Status.Result = compv1alpha1.ResultError
 			scanCopy.Status.Phase = compv1alpha1.PhaseDone
+			scanCopy.Status.EndTimestamp = &metav1.Time{Time: time.Now()}
 			scanCopy.Status.SetConditionInvalid()
 			if updateerr := r.Client.Status().Update(context.TODO(), scanCopy); updateerr != nil {
 				logger.Error(updateerr, "Failed to update a scan")
@@ -384,6 +405,136 @@ func (r *ReconcileComplianceScan) phaseLaunchingHandler(h scanTypeHandler, logge
 	return reconcile.Result{}, nil
 }
 
+// getRuntimeKubeletConfig gets the runtime kubeletconfig for a node
+// by fetching /api/v1/nodes/$nodeName/proxy/configz endpoint use the kubeClientset
+// and store it in a configmap for each node
+func (r *ReconcileComplianceScan) getRuntimeKubeletConfig(nodeName string) (string, error) {
+	// get the runtime kubeletconfig
+	kubeletConfigIO, err := r.ClientSet.CoreV1().RESTClient().Get().RequestURI("/api/v1/nodes/" + nodeName + "/proxy/configz").Stream(context.TODO())
+	if err != nil {
+		return "", err
+	}
+	defer kubeletConfigIO.Close()
+	kubeletConfig, err := ioutil.ReadAll(kubeletConfigIO)
+	if err != nil {
+		return "", err
+	}
+	// kubeletConfig is a byte array, we need to convert it to string
+	kubeletConfigStr := string(kubeletConfig)
+	return kubeletConfigStr, nil
+}
+
+func (r *ReconcileComplianceScan) createKubeletConfigCM(instance *compv1alpha1.ComplianceScan, node *corev1.Node, kubeletConfigStr string) error {
+	kubeletConfig, err := r.getRuntimeKubeletConfig(node.Name)
+	if err != nil {
+		return err
+	}
+	// create a configmap for the node
+	kubeletConfigCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      getKubeletCMNameForScan(instance, node),
+			Namespace: instance.Namespace,
+			CreationTimestamp: metav1.Time{
+				Time: time.Now(),
+			},
+			Labels: map[string]string{
+				compv1alpha1.ComplianceScanLabel: instance.Name,
+			},
+		},
+		Data: map[string]string{
+			KubeletConfigMapName: kubeletConfig,
+		},
+	}
+	err = r.Client.Create(context.TODO(), kubeletConfigCM)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *ReconcileComplianceScan) getNodeForScan(instance *compv1alpha1.ComplianceScan) (corev1.NodeList, error) {
+	nodes := corev1.NodeList{}
+	nodeScanSelector := map[string]string{"kubernetes.io/os": "linux"}
+	listOpts := client.ListOptions{
+		LabelSelector: labels.SelectorFromSet(labels.Merge(instance.Spec.NodeSelector, nodeScanSelector)),
+	}
+
+	if err := r.Client.List(context.TODO(), &nodes, &listOpts); err != nil {
+		return nodes, err
+	}
+	return nodes, nil
+}
+
+// checkConfigMapTimestamp checks if the configmap is older than the scan start time
+// if it is, then this will return true, else false
+func (r *ReconcileComplianceScan) checkConfigMapTimestamp(instance *compv1alpha1.ComplianceScan, node *corev1.Node) (bool, error) {
+	kubeletConfigCM := &corev1.ConfigMap{}
+	err := r.Client.Get(context.TODO(), types.NamespacedName{Name: getKubeletCMNameForScan(instance, node), Namespace: instance.Namespace}, kubeletConfigCM)
+	if err != nil {
+		return false, err
+	}
+	// check if the configmap is older the scan start time
+	if instance.Status.StartTimestamp == nil {
+		return false, fmt.Errorf("scan start timestamp is nil")
+	}
+	if kubeletConfigCM.CreationTimestamp.Before(instance.Status.StartTimestamp) {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (r *ReconcileComplianceScan) handleRuntimeKubeletConfig(instance *compv1alpha1.ComplianceScan, logger logr.Logger) error {
+	// only handle node scans
+	if instance.Spec.ScanType != compv1alpha1.ScanTypeNode {
+		return nil
+	}
+	nodes, err := r.getNodeForScan(instance)
+	if err != nil {
+		logger.Error(err, "Cannot get the nodes for the scan")
+		return err
+	}
+	for _, node := range nodes.Items {
+		// check if the configmap already exists for the node
+		kubeletConfigCM := &corev1.ConfigMap{}
+		err := r.Client.Get(context.TODO(), types.NamespacedName{Name: getKubeletCMNameForScan(instance, &node), Namespace: instance.Namespace}, kubeletConfigCM)
+		if err != nil {
+			if !errors.IsNotFound(err) {
+				logger.Error(err, "Error getting the configmap for the runtime kubeletconfig", "node", node.Name)
+				return err
+			}
+			// create a configmap for the node
+			err = r.createKubeletConfigCM(instance, &node, "")
+			logger.Info("Created a new configmap for the node", "configmap", kubeletConfigCM.Name, "node", node.Name)
+			if err != nil {
+				logger.Error(err, "Error creating the configmap for the runtime kubeletconfig", "node", node.Name)
+				return err
+			}
+			continue
+		}
+		// check if the configmap is older than the scan start timestamp
+		// if it is, delete the configmap and create a new one
+		needsDelete, err := r.checkConfigMapTimestamp(instance, &node)
+		if err != nil {
+			logger.Error(err, "Error checking the configmap timestamp", "configmap", kubeletConfigCM.Name, "node", node.Name)
+			return err
+		}
+		if needsDelete {
+			err = r.Client.Delete(context.TODO(), kubeletConfigCM)
+			if err != nil {
+				logger.Error(err, "Error deleting the configmap", "configmap", kubeletConfigCM.Name, "node", node.Name)
+				return err
+			}
+			err = r.createKubeletConfigCM(instance, &node, "")
+			logger.Info("Deleted the old configmap and created a new one", "configmap", kubeletConfigCM.Name, "node", node.Name)
+			if err != nil {
+				logger.Error(err, "Error creating the configmap for the runtime kubeletconfig")
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (r *ReconcileComplianceScan) phaseRunningHandler(h scanTypeHandler, logger logr.Logger) (reconcile.Result, error) {
 	logger.Info("Phase: Running")
 
@@ -398,8 +549,10 @@ func (r *ReconcileComplianceScan) phaseRunningHandler(h scanTypeHandler, logger 
 		scan = scan.DeepCopy()
 
 		if scan.NeedsTimeoutRescan() {
+			// If we already have rescan annotation, we need to update the scan status
 			return r.updateScanStatusOnTimeout(scan, timeoutNodes, logger)
 		} else {
+			// If we don't have rescan annotation, we need to add them
 			return r.setAnnotationOnTimeout(scan, timeoutNodes, logger)
 		}
 	}
@@ -426,6 +579,7 @@ func (r *ReconcileComplianceScan) updateScanStatusOnTimeout(scan *compv1alpha1.C
 	var err error
 	// If we have retries left, let's retry the scan
 	scan.Status.Phase = compv1alpha1.PhaseDone
+	scan.Status.EndTimestamp = &metav1.Time{Time: time.Now()}
 	scan.Status.Result = compv1alpha1.ResultError
 	scan.Status.ErrorMessage = "Timeout while waiting for the scan pod to be finished."
 	scan.Status.SetConditionTimeout()
@@ -482,6 +636,7 @@ func (r *ReconcileComplianceScan) phaseAggregatingHandler(h scanTypeHandler, log
 
 	if err != nil {
 		instance.Status.Phase = compv1alpha1.PhaseDone
+		instance.Status.EndTimestamp = &metav1.Time{Time: time.Now()}
 		instance.Status.Result = compv1alpha1.ResultError
 		instance.Status.SetConditionInvalid()
 		instance.Status.ErrorMessage = err.Error()
@@ -543,6 +698,7 @@ func (r *ReconcileComplianceScan) phaseAggregatingHandler(h scanTypeHandler, log
 	}
 
 	instance.Status.Phase = compv1alpha1.PhaseDone
+	instance.Status.EndTimestamp = &metav1.Time{Time: time.Now()}
 	instance.Status.SetConditionReady()
 	err = r.updateStatusWithEvent(instance, logger)
 	if err != nil {
@@ -615,6 +771,7 @@ func (r *ReconcileComplianceScan) phaseDoneHandler(h scanTypeHandler, instance *
 			instanceCopy := instance.DeepCopy()
 			instanceCopy.Status.Phase = compv1alpha1.PhasePending
 			instanceCopy.Status.Result = compv1alpha1.ResultNotAvailable
+			instanceCopy.Status.StartTimestamp = &metav1.Time{Time: time.Now()}
 			if instance.Status.CurrentIndex == math.MaxInt64 {
 				instanceCopy.Status.CurrentIndex = 0
 			} else {

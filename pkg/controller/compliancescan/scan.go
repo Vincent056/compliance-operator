@@ -124,6 +124,41 @@ func newScanPodForNode(scanInstance *compv1alpha1.ComplianceScan, node *corev1.N
 						},
 					},
 				},
+				{
+					Name:  "runtime-kubeletconfig-helper",
+					Image: utils.GetComponentImage(utils.OPERATOR),
+					Command: []string{
+						"sh",
+						"-c",
+						fmt.Sprintf("mkdir -p /host/tmp/compliance-operator && ln -s %s %s | /bin/true", KubeletConfigMapPath, KubeletConfigLinkPath),
+					},
+					ImagePullPolicy: corev1.PullAlways,
+					SecurityContext: &corev1.SecurityContext{
+						Privileged:             &trueVal,
+						ReadOnlyRootFilesystem: &trueP,
+					},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("20Mi"),
+							corev1.ResourceCPU:    resource.MustParse("10m"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("50Mi"),
+							corev1.ResourceCPU:    resource.MustParse("50m"),
+						},
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "host",
+							MountPath: "/host",
+						},
+						{
+							Name:      "kubeletconfig",
+							ReadOnly:  true,
+							MountPath: KubeletConfigMapPath,
+						},
+					},
+				},
 			},
 			Containers: []corev1.Container{
 				{
@@ -218,6 +253,11 @@ func newScanPodForNode(scanInstance *compv1alpha1.ComplianceScan, node *corev1.N
 							MountPath: "/scripts",
 							ReadOnly:  true,
 						},
+						{
+							Name:      "kubeletconfig",
+							MountPath: KubeletConfigMapPath,
+							ReadOnly:  true,
+						},
 					},
 					Env: []corev1.EnvVar{
 						{
@@ -279,6 +319,17 @@ func newScanPodForNode(scanInstance *compv1alpha1.ComplianceScan, node *corev1.N
 						ConfigMap: &corev1.ConfigMapVolumeSource{
 							LocalObjectReference: corev1.LocalObjectReference{
 								Name: scriptCmForScan(scanInstance),
+							},
+							DefaultMode: &mode,
+						},
+					},
+				},
+				{
+					Name: "kubeletconfig",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: getKubeletCMNameForScan(scanInstance, node),
 							},
 							DefaultMode: &mode,
 						},

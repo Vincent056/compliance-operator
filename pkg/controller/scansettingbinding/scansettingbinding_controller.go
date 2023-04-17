@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"strings"
 	"time"
+
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/metrics"
 
@@ -21,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -51,7 +53,7 @@ func (r *ReconcileScanSettingBinding) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func Add(mgr manager.Manager, met *metrics.Metrics, _ utils.CtlplaneSchedulingInfo) error {
+func Add(mgr manager.Manager, met *metrics.Metrics, _ utils.CtlplaneSchedulingInfo, _ *kubernetes.Clientset) error {
 	return add(mgr, newReconciler(mgr, met))
 }
 

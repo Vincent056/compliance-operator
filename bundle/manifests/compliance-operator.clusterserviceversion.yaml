@@ -1004,6 +1004,16 @@ spec:
           - list
           - watch
         - apiGroups:
+          - imageregistry.operator.openshift.io
+          resourceNames:
+          - cluster
+          resources:
+          - imagepruners
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
           - operator.openshift.io
           resourceNames:
           - cluster
@@ -1017,6 +1027,8 @@ spec:
           - compliance.openshift.io
           resources:
           - compliancesuites
+          - scansettings
+          - scansettingbindings
           verbs:
           - get
           - list
@@ -1081,11 +1093,19 @@ spec:
         - apiGroups:
           - ""
           resources:
-          - nodes
           - namespaces
           verbs:
           - list
           - watch
+        - apiGroups:
+          - ""
+          resources:
+          - nodes
+          - nodes/proxy
+          verbs:
+          - list
+          - watch
+          - get
         - apiGroups:
           - machineconfiguration.openshift.io
           resources:
@@ -1335,6 +1355,15 @@ spec:
           - update
           - delete
           - deletecollection
+        - apiGroups:
+          - ""
+          resources:
+          - nodes
+          - nodes/proxy
+          verbs:
+          - get
+          - list
+          - watch
         - apiGroups:
           - ""
           resources:

@@ -30,6 +30,7 @@ const (
 	ClientCertPrefix             = "result-client-cert-"
 	RootCAPrefix                 = "root-ca-"
 	CertValidityDays             = 1
+	KubeletConfigCMSuffix        = "-runtime-kubeletconfig"
 )
 
 // New returns an error that formats as the given text.
@@ -139,4 +140,8 @@ func secretExists(c client.Client, name, namespace string) (bool, error) {
 		return false, err
 	}
 	return err == nil, nil
+}
+
+func getKubeletCMNameForScan(scan *compv1alpha1.ComplianceScan, node *corev1.Node) string {
+	return fmt.Sprintf("%s-%s%s", scan.Name, node.Name, KubeletConfigCMSuffix)
 }

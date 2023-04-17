@@ -5,15 +5,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
+	"reflect"
+	goruntime "runtime"
+	"strings"
+
 	"github.com/go-logr/logr"
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/zap/zapcore"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"os"
-	"reflect"
-	goruntime "runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -280,10 +281,11 @@ func RunOperator(cmd *cobra.Command, args []string) {
 	}
 
 	// Setup all Controllers
-	if err := controller.AddToManager(mgr, met, si); err != nil {
+	if err := controller.AddToManager(mgr, met, si, kubeClient); err != nil {
 		setupLog.Error(err, "")
 		os.Exit(1)
 	}
+
 	pflag, _ := flags.GetString("platform")
 	platform := getValidPlatform(pflag)
 

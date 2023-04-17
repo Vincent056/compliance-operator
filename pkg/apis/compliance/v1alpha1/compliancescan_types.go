@@ -16,6 +16,14 @@ import (
 // should be re-run
 const ComplianceScanRescanAnnotation = "compliance.openshift.io/rescan"
 
+// ComplianceScanStartTimestampAnnotation indicates that a ComplianceScan
+// started running
+const ComplianceScanStartTimestampAnnotation = "compliance.openshift.io/start-timestamp"
+
+// ComplianceScanEndTimestampAnnotation indicates that a ComplianceScan
+// finished running
+const ComplianceScanEndTimestampAnnotation = "compliance.openshift.io/end-timestamp"
+
 // ComplianceScanTimeoutAnnotation indicates that a ComplianceScan
 // got a timeout, we will put the timeout node name in the annotation
 // if the scan is a node scan. If it's a platform scan, we will put
@@ -279,6 +287,10 @@ type ComplianceScanStatus struct {
 	Conditions Conditions `json:"conditions,omitempty"`
 	//Is the number of retries left for the scan on timeout
 	RemainingRetries int `json:"remainingRetries,omitempty"`
+	// Is the time when the scan was started
+	StartTimestamp *metav1.Time `json:"startTimestamp,omitempty"`
+	// Is the time when the scan was finished
+	EndTimestamp *metav1.Time `json:"endTimestamp,omitempty"`
 }
 
 // StorageReference stores a reference to where certain objects are being stored

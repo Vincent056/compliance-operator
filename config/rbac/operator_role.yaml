@@ -33,6 +33,15 @@ rules:
   - apiGroups:
       - ""
     resources:
+      - nodes
+      - nodes/proxy
+    verbs:
+      - get
+      - list
+      - watch 
+  - apiGroups:
+      - ""
+    resources:
       - secrets  # Secrets are used to store TLS assets
     verbs:
       - create   # The operator must create certificate secrets

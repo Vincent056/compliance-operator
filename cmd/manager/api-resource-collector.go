@@ -17,6 +17,7 @@ package manager
 
 import (
 	"flag"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 

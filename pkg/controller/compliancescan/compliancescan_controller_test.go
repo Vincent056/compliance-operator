@@ -1,12 +1,17 @@
 package compliancescan
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	"time"
 
+	compv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
+	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/common"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/metrics"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/metrics/metricsfakes"
-
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
 	. "github.com/onsi/ginkgo"
@@ -16,11 +21,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	kube "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	restclient "k8s.io/client-go/rest/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	compv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
-	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/common"
 )
 
 func createFakeScanPods(reconciler ReconcileComplianceScan, scanName string, nodeNames ...string) {
@@ -96,6 +100,30 @@ var _ = Describe("Testing compliancescan controller phases", func() {
 			},
 		}
 
+		// Create a fake rest client to mock /api/v1/nodes/$nodeName/proxy/configz call
+
+		restFake := &restclient.RESTClient{
+			Client: restclient.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path == "/api/v1/nodes/"+nodeinstance1.Name+"/proxy/configz" {
+					return &http.Response{
+						StatusCode: 200,
+						Body:       ioutil.NopCloser(bytes.NewBuffer([]byte(`{"kubeletconfig": {"kind": "KubeletConfiguration", "apiVersion": "kubelet.config.k8s.io/v1beta1", "authentication": {"x509": {"clientCAFile": "/etc/kubernetes/ca.crt"}}}}`))),
+					}, nil
+				}
+				if req.URL.Path == "/api/v1/nodes/"+nodeinstance2.Name+"/proxy/configz" {
+					return &http.Response{
+						StatusCode: 200,
+						Body:       ioutil.NopCloser(bytes.NewBuffer([]byte(`{"kubeletconfig": {"kind": "KubeletConfiguration", "apiVersion": "kubelet.config.k8s.io/v1beta1"}}`))),
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: 404,
+					Body:       ioutil.NopCloser(bytes.NewBuffer([]byte(`{"error": "not found"}`))),
+				}, nil
+			}),
+		}
+
+		kubeClient := kube.New(restFake)
 		caSecret, _ := makeCASecret(compliancescaninstance, common.GetComplianceOperatorNamespace())
 		serverSecret, _ := serverCertSecret(compliancescaninstance, caSecret.Data[corev1.TLSCertKey], caSecret.Data[corev1.TLSPrivateKeyKey], common.GetComplianceOperatorNamespace())
 		clientSecret, _ := clientCertSecret(compliancescaninstance, caSecret.Data[corev1.TLSCertKey], caSecret.Data[corev1.TLSPrivateKeyKey], common.GetComplianceOperatorNamespace())
@@ -116,7 +144,7 @@ var _ = Describe("Testing compliancescan controller phases", func() {
 		err = mockMetrics.Register()
 		Expect(err).To(BeNil())
 
-		reconciler = ReconcileComplianceScan{Client: client, Scheme: scheme, Metrics: mockMetrics}
+		reconciler = ReconcileComplianceScan{Client: client, ClientSet: kubeClient, Scheme: scheme, Metrics: mockMetrics}
 		handler, err = getScanTypeHandler(&reconciler, compliancescaninstance, logger)
 		Expect(err).To(BeNil())
 		_, err = handler.validate()
@@ -205,25 +233,60 @@ var _ = Describe("Testing compliancescan controller phases", func() {
 		BeforeEach(func() {
 			// Set state to RUNNING
 			compliancescaninstance.Status.Phase = compv1alpha1.PhaseLaunching
+			compliancescaninstance.Status.StartTimestamp = &metav1.Time{Time: time.Now()}
 			err := reconciler.Client.Status().Update(context.TODO(), compliancescaninstance)
 			Expect(err).To(BeNil())
 		})
-		It("should create PVC and stay on the same phase", func() {
-			result, err := reconciler.phaseLaunchingHandler(handler, logger)
-			Expect(result).ToNot(BeNil())
-			Expect(err).To(BeNil())
-			Expect(compliancescaninstance.Status.Phase).To(Equal(compv1alpha1.PhaseLaunching))
+		Context("With no PVC", func() {
+			It("should create PVC and stay on the same phase", func() {
+				result, err := reconciler.phaseLaunchingHandler(handler, logger)
+				Expect(result).ToNot(BeNil())
+				Expect(err).To(BeNil())
+				Expect(compliancescaninstance.Status.Phase).To(Equal(compv1alpha1.PhaseLaunching))
 
-			// We should have scheduled a pod per node
-			scan := &compv1alpha1.ComplianceScan{}
-			key := types.NamespacedName{
-				Name:      compliancescaninstance.Name,
-				Namespace: compliancescaninstance.Namespace,
-			}
-			err = reconciler.Client.Get(context.TODO(), key, scan)
-			Expect(err).To(BeNil())
-			Expect(scan.Status.ResultsStorage.Name).To(Equal(getPVCForScanName(key.Name)))
+				// We should have scheduled a pod per node
+				scan := &compv1alpha1.ComplianceScan{}
+				key := types.NamespacedName{
+					Name:      compliancescaninstance.Name,
+					Namespace: compliancescaninstance.Namespace,
+				}
+				err = reconciler.Client.Get(context.TODO(), key, scan)
+				Expect(err).To(BeNil())
+				Expect(scan.Status.ResultsStorage.Name).To(Equal(getPVCForScanName(key.Name)))
+			})
 		})
+
+		Context("with the PVC set and no Kubelet ConfigMap", func() {
+			BeforeEach(func() {
+				compliancescaninstance.Status.ResultsStorage.Name = getPVCForScanName(compliancescaninstance.Name)
+				compliancescaninstance.Status.ResultsStorage.Namespace = common.GetComplianceOperatorNamespace()
+				err := reconciler.Client.Status().Update(context.TODO(), compliancescaninstance)
+				Expect(err).To(BeNil())
+			})
+			It("should create ConfigMap and go to phase RUNNING", func() {
+				result, err := reconciler.phaseLaunchingHandler(handler, logger)
+				Expect(result).ToNot(BeNil())
+				Expect(err).To(BeNil())
+				Expect(compliancescaninstance.Status.Phase).To(Equal(compv1alpha1.PhaseRunning))
+				// Check if Kubelet ConfigMap was created
+				cm := &corev1.ConfigMap{}
+				cmKey := types.NamespacedName{
+					Name:      getKubeletCMNameForScan(compliancescaninstance, nodeinstance1),
+					Namespace: compliancescaninstance.Namespace,
+				}
+				err = reconciler.Client.Get(context.TODO(), cmKey, cm)
+				Expect(err).To(BeNil())
+				Expect(cm.Data[KubeletConfigMapName]).To(Equal(`{"kubeletconfig": {"kind": "KubeletConfiguration", "apiVersion": "kubelet.config.k8s.io/v1beta1", "authentication": {"x509": {"clientCAFile": "/etc/kubernetes/ca.crt"}}}}`))
+				cmKey = types.NamespacedName{
+					Name:      getKubeletCMNameForScan(compliancescaninstance, nodeinstance2),
+					Namespace: compliancescaninstance.Namespace,
+				}
+				err = reconciler.Client.Get(context.TODO(), cmKey, cm)
+				Expect(err).To(BeNil())
+				Expect(cm.Data[KubeletConfigMapName]).To(Equal(`{"kubeletconfig": {"kind": "KubeletConfiguration", "apiVersion": "kubelet.config.k8s.io/v1beta1"}}`))
+			})
+		})
+
 		Context("with the PVC set", func() {
 			BeforeEach(func() {
 				compliancescaninstance.Status.ResultsStorage.Name = getPVCForScanName(compliancescaninstance.Name)

@@ -18,8 +18,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/ComplianceAsCode/compliance-operator/cmd/manager"
 	"os"
+
+	"github.com/ComplianceAsCode/compliance-operator/cmd/manager"
 
 	"github.com/spf13/cobra"
 )

@@ -3,8 +3,9 @@ package compliancesuite
 import (
 	"context"
 	"fmt"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"time"
+
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/go-logr/logr"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
@@ -13,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -44,7 +46,7 @@ func (r *ReconcileComplianceSuite) SetupWithManager(mgr ctrl.Manager) error {
 
 // Add creates a new ComplianceSuite Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-func Add(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo) error {
+func Add(mgr manager.Manager, met *metrics.Metrics, si utils.CtlplaneSchedulingInfo, _ *kubernetes.Clientset) error {
 	return add(mgr, newReconciler(mgr, met, si))
 }
 
@@ -474,6 +476,14 @@ func (r *ReconcileComplianceSuite) reconcileRemediations(suite *compv1alpha1.Com
 		return reconcile.Result{}, err
 	}
 
+	// We only post-process when everything is done.
+	// This is to prevent unabled to unpause the MachineConfigPool
+	// when there are stucked scans.
+	if suite.Status.Phase != compv1alpha1.PhaseDone {
+		logger.Info("Waiting until all scans are in Done phase before post-procesing remediations")
+		return reconcile.Result{}, nil
+	}
+
 	// Construct the list of the statuses
 	for _, rem := range remList.Items {
 		// get relevant scan
@@ -493,13 +503,6 @@ func (r *ReconcileComplianceSuite) reconcileRemediations(suite *compv1alpha1.Com
 		if err := r.applyRemediation(rem, suite, scan, mcfgpools, affectedMcfgPools, logger); err != nil {
 			return reconcile.Result{}, err
 		}
-	}
-
-	// We only post-process when everything is done. This avoids unnecessary
-	// "unpauses" for MachineConfigPools
-	if suite.Status.Phase != compv1alpha1.PhaseDone {
-		logger.Info("Waiting until all scans are in Done phase before post-procesing remediations")
-		return reconcile.Result{}, nil
 	}
 
 	logger.Info("All scans are in Done phase. Post-processing remediations")

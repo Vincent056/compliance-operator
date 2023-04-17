@@ -6,11 +6,19 @@ rules:
   - apiGroups:
       - ""
     resources:
-      - nodes  # We need to list the nodes to be able to selectively scan
       - namespaces # We need this to get the range
     verbs:
       - list
       - watch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes # We need to list the nodes to be able to selectively scan
+      - nodes/proxy # We need to be able to get runtime kubeletconfig from the nodes
+    verbs:
+      - list
+      - watch
+      - get
   - apiGroups:
       - machineconfiguration.openshift.io
     resources:
