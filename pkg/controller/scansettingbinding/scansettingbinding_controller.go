@@ -353,7 +353,7 @@ func (r *ReconcileScanSettingBinding) applyConstraint(
 		return common.WrapNonRetriableCtrlError(err)
 	}
 
-	if valErr := r.validateRoles(instance, &v1setting, logger); valErr != nil {
+	if valErr := r.validateRoles(&v1setting); valErr != nil {
 		return common.NewRetriableCtrlErrorWithCustomHandler(
 			func() (reconcile.Result, error) {
 				return reconcile.Result{}, nil
@@ -373,11 +373,7 @@ func (r *ReconcileScanSettingBinding) applyConstraint(
 	return nil
 }
 
-func (r *ReconcileScanSettingBinding) validateRoles(
-	binding *compliancev1alpha1.ScanSettingBinding,
-	setting *compliancev1alpha1.ScanSetting,
-	logger logr.Logger,
-) error {
+func (r *ReconcileScanSettingBinding) validateRoles(setting *compliancev1alpha1.ScanSetting) error {
 	if len(setting.Roles) == 0 {
 		r.Eventf(setting, corev1.EventTypeWarning, "EmptyRoles",
 			"The ScanSetting's roles are empty. Node scans won't be scheduled.")
@@ -394,94 +390,8 @@ func (r *ReconcileScanSettingBinding) validateRoles(
 		if !r.roleVal.MatchString(role) {
 			return fmt.Errorf("role %s is invalid", role)
 		}
-		if !isBuiltInRole(role) {
-			// if the scan setting is not using a built-in role, we need to make sure that the role is set
-			// in a tailored profile
-			if err := r.verifyRoleInScanSettingBinding(binding, role, logger); err != nil {
-				msg := "The scanSetting references a non-default role, but either no tailored profile is set or the role variables are not set"
-				ssb := binding.DeepCopy()
-				ssb.Status.SetConditionInvalid(msg)
-				if updateErr := r.Client.Status().Update(context.TODO(), ssb); updateErr != nil {
-					return fmt.Errorf("couldn't update ScanSettingBinding condition: %w", updateErr)
-				}
-				return fmt.Errorf("role %s is not set in any tailored profile: %w", role, err)
-			}
-		}
 	}
 	return nil
-}
-
-// return an error if the ssb references at least one Platform profile that is not
-// tailored or a tailored profile that does not have the role set
-func (r *ReconcileScanSettingBinding) verifyRoleInScanSettingBinding(
-	binding *compliancev1alpha1.ScanSettingBinding,
-	role string,
-	logger logr.Logger,
-) error {
-	profilesToCheck := []compliancev1alpha1.NamedObjectReference{}
-
-	for i := range binding.Profiles {
-		prfRef := &binding.Profiles[i]
-
-		key := types.NamespacedName{Namespace: binding.Namespace, Name: prfRef.Name}
-		prfObj, err := getUnstructured(r, binding, key, prfRef.Kind, prfRef.APIGroup, logger)
-		if err != nil {
-			return fmt.Errorf("error getting Profile %s: %w", prfRef.Name, err)
-		}
-
-		profileType, err := getTpScanType(r, binding, prfRef.APIGroup, prfObj, logger)
-		if err != nil {
-			logger.Info("error getting scan type, assuming Platform", "profile", prfRef.Name, "error", err)
-			profileType = compliancev1alpha1.ScanTypePlatform
-		}
-
-		if profileType == compliancev1alpha1.ScanTypeNode {
-			continue
-		}
-
-		profilesToCheck = append(profilesToCheck, *prfRef)
-	}
-
-	if len(profilesToCheck) == 0 {
-		// all profiles we had were node profiles, so we don't need to check for the roles
-		return nil
-	}
-
-	// at least one of profilesToCheck must be a TP with the role set
-	for i := range profilesToCheck {
-		prfRef := &profilesToCheck[i]
-
-		if prfRef.Kind != "TailoredProfile" {
-			// we only care about tailored profiles
-			continue
-		}
-
-		key := types.NamespacedName{Namespace: binding.Namespace, Name: prfRef.Name}
-		tp, geterr := getUnstructured(r, binding, key, prfRef.Kind, prfRef.APIGroup, logger)
-		if geterr != nil {
-			return fmt.Errorf("error getting TailoredProfile %s: %w", prfRef.Name, geterr)
-		}
-
-		if err := isCmpv1Alpha1Gvk(tp, "TailoredProfile"); err != nil {
-			return common.WrapNonRetriableCtrlError(err)
-		}
-
-		v1alphaTp := compliancev1alpha1.TailoredProfile{}
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(tp.Object, &v1alphaTp); err != nil {
-			return common.WrapNonRetriableCtrlError(err)
-		}
-
-		for vi := range v1alphaTp.Spec.SetValues {
-			val := &v1alphaTp.Spec.SetValues[vi]
-			if val.Value == role {
-				return nil
-			}
-		}
-	}
-
-	msg := fmt.Sprintf("role %s is not set in any variable in tailored profiles", role)
-	r.Eventf(binding, corev1.EventTypeWarning, "", msg)
-	return fmt.Errorf(msg)
 }
 
 func (r *ReconcileScanSettingBinding) createScansWithSelector(
@@ -523,10 +433,6 @@ func (r *ReconcileScanSettingBinding) sanitizeRoleForName(roleName string) strin
 	// has already happened.
 	return r.invalidRole.ReplaceAllString(roleName, "")
 
-}
-
-func isBuiltInRole(role string) bool {
-	return role == "master" || role == "worker" || role == "control-plane"
 }
 
 func newCompScanFromBindingProfile(r *ReconcileScanSettingBinding, instance *compliancev1alpha1.ScanSettingBinding, profile *unstructured.Unstructured, logger logr.Logger) (*compliancev1alpha1.ComplianceScanSpecWrapper, string, error) {

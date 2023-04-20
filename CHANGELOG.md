@@ -118,15 +118,6 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Internal Changes
 
-- The Compliance Operator now marks a `ScanSettingBinding` that uses a
-  `ScanSetting` which in turn uses a non-default node role as failed
-  unless the `ScanSettingBinding` points to a `TailoredProfile` that sets
-  a variable which tailors the content to generate remediations for that
-  pool only. This prevents [issues](https://issues.redhat.com//browse/OCPBUGS-3864)
-  where some remediations were applied cluster-wide and some only for a
-  custom pool by forcing the user to select the pool explicitly and thus
-  generating all remediations consistently for that pool only.
-
 - Added the ability to hide compliance check result for helper rule, we will
   scan for "ocp-hide-rule" in the warning, and if it exist we will not show
   the rule in the compliance check result.

@@ -20,10 +20,10 @@ type ScanSettingBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec     ScanSettingBindingSpec `json:"spec,omitempty"`
-	Profiles []NamedObjectReference `json:"profiles,omitempty"`
-	// +kubebuilder:default={"name":"default","kind": "ScanSetting", "apiGroup": "compliance.openshift.io/v1alpha1"}
-	SettingsRef *NamedObjectReference `json:"settingsRef,omitempty"`
+	Spec        ScanSettingBindingSpec `json:"spec,omitempty"`
+	Profiles    []NamedObjectReference `json:"profiles,omitempty"`
+        // +kubebuilder:default={"name":"default","kind": "ScanSetting", "apiGroup": "compliance.openshift.io/v1alpha1"}
+	SettingsRef *NamedObjectReference  `json:"settingsRef,omitempty"`
 	// +optional
 	Status ScanSettingBindingStatus `json:"status,omitempty"`
 }
