@@ -4,6 +4,7 @@ include version.Makefile
 # ==================
 export APP_NAME=compliance-operator
 export GOARCH = $(shell go env GOARCH)
+export PLATFORM?=openshift # target platform for the operator (openshift, generic)
 
 # Runtime variables
 # =================
@@ -483,7 +484,7 @@ endif
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | kubectl apply -f -
+	$(KUSTOMIZE) build config/crd | kubectl apply -f - 
 
 .PHONY: uninstall
 uninstall: kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -497,7 +498,7 @@ deploy: manifests kustomize install ## Deploy controller to the K8s cluster spec
 .PHONY: deploy-to-cluster
 deploy-local: manifests kustomize image-to-cluster install  ## Deploy after pushing images to the cluster registry.
 	cd config/manager && $(KUSTOMIZE) edit set image $(APP_NAME)=${OPERATOR_IMAGE}
-	$(KUSTOMIZE) build config/default | sed -e 's%$(DEFAULT_OPERATOR_IMAGE)%$(OPERATOR_IMAGE)%' -e 's%$(DEFAULT_CONTENT_IMAGE)%$(CONTENT_IMAGE)%' -e 's%$(DEFAULT_OPENSCAP_IMAGE)%$(OPENSCAP_IMAGE)%' | kubectl apply -f -
+	$(KUSTOMIZE) build config/$(PLATFORM) | sed -e 's%$(DEFAULT_OPERATOR_IMAGE)%$(OPERATOR_IMAGE)%' -e 's%$(DEFAULT_CONTENT_IMAGE)%$(CONTENT_IMAGE)%' -e 's%$(DEFAULT_OPENSCAP_IMAGE)%$(OPENSCAP_IMAGE)%' | kubectl apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.

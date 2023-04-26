@@ -1,0 +1,14 @@
+# Patch the deployment to run on master nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance-operator
+spec:
+  template:
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+        - key: "node-role.kubernetes.io/master"
+          operator: "Exists"
+          effect: "NoSchedule"

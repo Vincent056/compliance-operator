@@ -18,7 +18,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Internal Changes
 
--
+- Update Kustomize and make target to be able to deploy on generic Kubernetes cluster.
 
 ### Deprecations
 

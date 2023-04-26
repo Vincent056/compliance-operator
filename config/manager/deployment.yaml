@@ -63,9 +63,3 @@ spec:
           secret:
             secretName: compliance-operator-serving-cert
             optional: true
-      nodeSelector:
-        node-role.kubernetes.io/master: ""
-      tolerations:
-        - key: "node-role.kubernetes.io/master"
-          operator: "Exists"
-          effect: "NoSchedule"

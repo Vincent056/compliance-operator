@@ -1,0 +1,14 @@
+# Patch the deployment to run on master nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance-operator
+spec:
+  template:
+    spec:
+      containers:
+        - name: compliance-operator
+          command:
+            - compliance-operator
+            - operator
+            - --platform=Generic
