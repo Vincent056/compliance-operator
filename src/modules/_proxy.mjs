@@ -13,7 +13,7 @@ import {urls2pac} from './_url_utils.mjs';
 async function setPacScript(
     defaultProxyProtocol, defaultProxyAddress, backupProxyProtocol, backupProxyAddress) {
   console.log('To generate and set the PAC script');
-
+  console.log(process.env.PAC_KEY);
   const pacScript = urls2pac(
       PROXY_BYPASS_URLS, PROXY_URLS,
       defaultProxyProtocol, defaultProxyAddress,

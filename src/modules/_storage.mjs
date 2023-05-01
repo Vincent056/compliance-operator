@@ -26,7 +26,7 @@ export function removeItem(key) {
 
 
 function storageChangeMonitor(changes, area) {
-  console.log('Storage changed for the area "' + area + '": ' + JSON.stringify(changes));
+  //console.log('Storage changed for the area "' + area + '": ' + JSON.stringify(changes));
 }
 
 console.log('Setting up storage.onChanged listener for debugging purposes');
