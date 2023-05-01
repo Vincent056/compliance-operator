@@ -1,4 +1,4 @@
-import { validateEmail } from '../tools/_regex_utils.mjs';
+import { validateEmail } from './modules/popup_tool.mjs';
 import './modules/crash_report.mjs';
 
 import {Modes} from './modules/modes.mjs';
