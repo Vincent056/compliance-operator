@@ -62,6 +62,8 @@ func ParseBundle(contentDom *xmlquery.Node, pb *cmpv1alpha1.ProfileBundle, pcfg 
 	stdParser := newStandardParser()
 	nonce := names.SimpleNameGenerator.GenerateName(fmt.Sprintf("pb-%s", pb.Name))
 	go func() {
+		var compositeProfiles = make(map[string]*cmpv1alpha1.CompositeProfile)
+
 		profErr := ParseProfilesAndDo(contentDom, pb, nonce, func(p *cmpv1alpha1.Profile) error {
 			err := parseAction(p, "Profile", pb, pcfg, func(found, updated interface{}) error {
 				foundProfile, ok := found.(*cmpv1alpha1.Profile)
@@ -75,6 +77,32 @@ func ParseBundle(contentDom *xmlquery.Node, pb *cmpv1alpha1.ProfileBundle, pcfg 
 
 				foundProfile.Annotations = updatedProfile.Annotations
 				foundProfile.ProfilePayload = *updatedProfile.ProfilePayload.DeepCopy()
+
+				compositeProfileName := foundProfile.Annotations[cmpv1alpha1.CompositeProfileAnnotation]
+
+				if _, exists := compositeProfiles[compositeProfileName]; !exists {
+					compositeProfiles[compositeProfileName] = &cmpv1alpha1.CompositeProfile{
+						TypeMeta: metav1.TypeMeta{
+							Kind:       "CompositeProfile",
+							APIVersion: cmpv1alpha1.SchemeGroupVersion.String(),
+						},
+						ObjectMeta: metav1.ObjectMeta{
+							Name: compositeProfileName,
+						},
+						CompositeProfilePayload: cmpv1alpha1.CompositeProfilePayload{
+							Title:       "Composite Profile for " + xccdf.GetCompositeProfileTitle(foundProfile.ProfilePayload.Title),
+							Description: foundProfile.ProfilePayload.Description,
+							Rules:       make([]cmpv1alpha1.ProfileRule, 0),
+							Values:      make([]cmpv1alpha1.ProfileValue, 0),
+							Profiles:    make([]string, 0),
+						},
+					}
+				}
+
+				compositeProfiles[compositeProfileName].Profiles = append(compositeProfiles[compositeProfileName].Profiles, string(foundProfile.Name))
+				compositeProfiles[compositeProfileName].Rules = append(compositeProfiles[compositeProfileName].Rules, foundProfile.ProfilePayload.Rules...)
+				compositeProfiles[compositeProfileName].Values = append(compositeProfiles[compositeProfileName].Values, foundProfile.ProfilePayload.Values...)
+
 				return pcfg.Client.Update(context.TODO(), foundProfile)
 			})
 			return err
@@ -82,6 +110,13 @@ func ParseBundle(contentDom *xmlquery.Node, pb *cmpv1alpha1.ProfileBundle, pcfg 
 
 		if profErr != nil {
 			errChan <- profErr
+		}
+
+		for _, compositeProfile := range compositeProfiles {
+			// Here we create the CompositeProfiles
+			if err := pcfg.Client.Create(context.TODO(), compositeProfile); err != nil {
+				errChan <- fmt.Errorf("failed to create CompositeProfile: %v", err)
+			}
 		}
 
 		if err := deleteObsoleteItems(pcfg.Client, "Profile", pb.Name, pb.Namespace, nonce); err != nil {
@@ -352,8 +387,9 @@ func parseProfileFromNode(profileRoot *xmlquery.Node, pb *cmpv1alpha1.ProfileBun
 				Name:      xccdf.GetProfileNameFromID(id),
 				Namespace: pb.Namespace,
 				Annotations: map[string]string{
-					cmpv1alpha1.ProductAnnotation:     productName,
-					cmpv1alpha1.ProductTypeAnnotation: string(productType),
+					cmpv1alpha1.ProductAnnotation:          productName,
+					cmpv1alpha1.ProductTypeAnnotation:      string(productType),
+					cmpv1alpha1.CompositeProfileAnnotation: xccdf.GetCompositeProfileNameFromID(id),
 				},
 			},
 			ProfilePayload: cmpv1alpha1.ProfilePayload{

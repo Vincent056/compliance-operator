@@ -1,0 +1,67 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.11.3
+  creationTimestamp: null
+  name: compositeprofiles.compliance.openshift.io
+spec:
+  group: compliance.openshift.io
+  names:
+    kind: CompositeProfile
+    listKind: CompositeProfileList
+    plural: compositeprofiles
+    singular: compositeprofile
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CompositeProfile is the Schema for the compositeprofiles API
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          description:
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          profiles:
+            items:
+              type: string
+            nullable: true
+            type: array
+            x-kubernetes-list-type: atomic
+          rules:
+            items:
+              description: ProfileRule defines the name of a specific rule in the
+                profile
+              type: string
+            nullable: true
+            type: array
+            x-kubernetes-list-type: atomic
+          title:
+            type: string
+          values:
+            items:
+              description: ProfileValue defines a value for a setting in the profile
+              type: string
+            nullable: true
+            type: array
+            x-kubernetes-list-type: atomic
+        required:
+        - description
+        - title
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

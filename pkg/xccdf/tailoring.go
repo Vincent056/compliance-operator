@@ -12,10 +12,13 @@ import (
 
 const (
 	// XMLHeader is the header for the XML doc
-	XMLHeader       string = `<?xml version="1.0" encoding="UTF-8"?>`
-	profileIDPrefix string = "xccdf_org.ssgproject.content_profile_"
-	ruleIDPrefix    string = "xccdf_org.ssgproject.content_rule_"
-	varIDPrefix     string = "xccdf_org.ssgproject.content_value_"
+	XMLHeader           string = `<?xml version="1.0" encoding="UTF-8"?>`
+	profileIDPrefix     string = "xccdf_org.ssgproject.content_profile_"
+	nodeProfileSuffix   string = "-node"
+	ruleIDPrefix        string = "xccdf_org.ssgproject.content_rule_"
+	varIDPrefix         string = "xccdf_org.ssgproject.content_value_"
+	platformLevelSuffix string = "- Platform level"
+	nodeLevelSuffix     string = "- Node level"
 	// XCCDFNamespace is the XCCDF namespace of this project. Per the XCCDF
 	// specification, this assiciates the content with the author
 	XCCDFNamespace string = "compliance.openshift.io"
@@ -77,6 +80,25 @@ type SetValueElement struct {
 // GetXCCDFProfileID gets a profile xccdf ID from the TailoredProfile object
 func GetXCCDFProfileID(tp *cmpv1alpha1.TailoredProfile) string {
 	return fmt.Sprintf("xccdf_%s_profile_%s", XCCDFNamespace, tp.Name)
+}
+
+// GetCompositeProfileTitle gets a composite profile title from the
+// profile Title
+func GetCompositeProfileTitle(title string) string {
+	// remove node level suffix and platform level suffix from title
+	title = strings.TrimSuffix(title, nodeLevelSuffix)
+	title = strings.TrimSuffix(title, platformLevelSuffix)
+	// trim spaces
+	title = strings.TrimSpace(title)
+	return title
+}
+
+// GetCompositeProfileNameFromID gets a composite profile name from the
+// profile xccdf ID
+func GetCompositeProfileNameFromID(id string) string {
+	profileName := GetProfileNameFromID(id)
+	compositeProfileName := strings.TrimPrefix(profileName, nodeProfileSuffix)
+	return compositeProfileName
 }
 
 // GetProfileNameFromID gets a profile name from the xccdf ID

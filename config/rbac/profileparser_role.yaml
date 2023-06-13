@@ -21,6 +21,7 @@ rules:
       - profiles
       - rules
       - variables
+      - compositeprofiles
     verbs:
       - get
       - watch
