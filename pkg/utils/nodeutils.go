@@ -25,7 +25,9 @@ import (
 	"strconv"
 	"strings"
 
+	compliancev1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	"github.com/PaesslerAG/jsonpath"
+	"github.com/go-logr/logr"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"k8s.io/apimachinery/pkg/types"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,6 +42,38 @@ const (
 	mcPayloadPrefix        = `data:text/plain,`
 	mcBase64PayloadPrefix  = `data:text/plain;charset=utf-8;base64,`
 )
+
+var affectedKubeletConfigRule = map[string]bool{
+	"ocp4-kubelet-anonymous-auth":                                  true,
+	"ocp4-kubelet-authorization-mode":                              true,
+	"ocp4-kubelet-configure-client-ca":                             true,
+	"ocp4-kubelet-configure-event-creation":                        true,
+	"ocp4-kubelet-configure-tls-cipher-suites":                     true,
+	"ocp4-kubelet-configure-tls-min-version":                       true,
+	"ocp4-kubelet-disable-hostname-override":                       true,
+	"ocp4-kubelet-enable-cert-rotation":                            true,
+	"ocp4-kubelet-enable-client-cert-rotation":                     true,
+	"ocp4-kubelet-enable-iptables-util-chains":                     true,
+	"ocp4-kubelet-enable-protect-kernel-defaults":                  true,
+	"ocp4-kubelet-enable-server-cert-rotation":                     true,
+	"ocp4-kubelet-enable-streaming-connections":                    true,
+	"ocp4-kubelet-eviction-thresholds-set-hard-imagefs-available":  true,
+	"ocp4-kubelet-eviction-thresholds-set-hard-imagefs-inodesfree": true,
+	"ocp4-kubelet-eviction-thresholds-set-hard-memory-available":   true,
+	"ocp4-kubelet-eviction-thresholds-set-hard-nodefs-available":   true,
+	"ocp4-kubelet-eviction-thresholds-set-hard-nodefs-inodesfree":  true,
+	"ocp4-kubelet-eviction-thresholds-set-soft-imagefs-available":  true,
+	"ocp4-kubelet-eviction-thresholds-set-soft-imagefs-inodesfree": true,
+	"ocp4-kubelet-eviction-thresholds-set-soft-memory-available":   true,
+	"ocp4-kubelet-eviction-thresholds-set-soft-nodefs-available":   true,
+	"ocp4-kubelet-eviction-thresholds-set-soft-nodefs-inodesfree":  true,
+	"ocp4-kubelet-read-only-port-secured":                          true,
+}
+
+var deprecatedRoleVariables = map[string]bool{
+	"ocp4-var-role-master": true,
+	"ocp4-var-role-worker": true,
+}
 
 var nodeSizingEnvList = [2]string{"autoSizingReserved", "systemReserved"}
 
@@ -141,6 +175,69 @@ func IsMcfgPoolUsingKC(pool *mcfgv1.MachineConfigPool) (bool, string, error) {
 	}
 
 	return true, currentKCMC, nil
+}
+
+func GetScanType(annotations map[string]string) (compliancev1alpha1.ComplianceScanType, error) {
+	platformType, ok := annotations[compliancev1alpha1.ProductTypeAnnotation]
+	if !ok {
+		return compliancev1alpha1.ScanTypePlatform, fmt.Errorf("no %s label found", compliancev1alpha1.ProductTypeAnnotation)
+	}
+
+	switch strings.ToLower(platformType) {
+	case strings.ToLower(string(compliancev1alpha1.ScanTypeNode)):
+		return compliancev1alpha1.ScanTypeNode, nil
+	default:
+		break
+	}
+
+	return compliancev1alpha1.ScanTypePlatform, nil
+}
+
+// IsTPCorrect checks if the TailoredProfile has any deprecated variables or or any updated KubeletConfig rules
+// return error if any deprecated variables or updated KubeletConfig rules are found
+func IsTPCorrect(
+	v1alphaTp *compliancev1alpha1.TailoredProfile, logger logr.Logger) error {
+
+	profileType, err := GetScanType(v1alphaTp.GetAnnotations())
+	if err != nil {
+		logger.Info("Failed to get profile type from annotations", "error", err)
+		logger.Info("Assuming profile type is Platform")
+		profileType = compliancev1alpha1.ScanTypePlatform
+	}
+	// we only care about tailored profiles that are not node profiles
+	// since we migrate affected kubeletconfig platform rules to node rules
+	if profileType == compliancev1alpha1.ScanTypeNode {
+		return nil
+	}
+
+	msg := ""
+	for eri := range v1alphaTp.Spec.EnableRules {
+		rule := &v1alphaTp.Spec.EnableRules[eri]
+		// check if the rule is in affectedKubeletConfigRule
+		if _, ok := affectedKubeletConfigRule[rule.Name]; ok {
+			msg += fmt.Sprintf("TailoredProfile %s has updated KubeletConfig rule %s, please migrate to a new TailoredProfile\n", v1alphaTp.GetName(), rule.Name)
+		}
+	}
+
+	for dri := range v1alphaTp.Spec.DisableRules {
+		rule := &v1alphaTp.Spec.DisableRules[dri]
+		// check if the rule is in affectedKubeletConfigRule
+		if _, ok := affectedKubeletConfigRule[rule.Name]; ok {
+			msg += fmt.Sprintf("TailoredProfile %s has updated KubeletConfig rule %s, please migrate to a new TailoredProfile\n", v1alphaTp.GetName(), rule.Name)
+		}
+	}
+
+	for vi := range v1alphaTp.Spec.SetValues {
+		variables := &v1alphaTp.Spec.EnableRules[vi]
+		// check if any deprecated role variables are set
+		if _, ok := deprecatedRoleVariables[variables.Name]; ok {
+			msg += fmt.Sprintf("TailoredProfile %s has deprecated role variable %s, please remove variables from the TailoredProfile", v1alphaTp.GetName(), variables.Name)
+		}
+	}
+	if msg == "" {
+		return nil
+	}
+	return fmt.Errorf(msg)
 }
 
 func AreKubeletConfigsRendered(pool *mcfgv1.MachineConfigPool, client runtimeclient.Client) (bool, error, string) {

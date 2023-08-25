@@ -275,6 +275,23 @@ func (r *ReconcileComplianceScan) validate(instance *compv1alpha1.ComplianceScan
 		r.Metrics.IncComplianceScanStatus(instanceCopy.Name, instanceCopy.Status)
 		return false, nil
 	}
+	// check if there are any problems with any of the tailored profiles in suite namespace
+	tpList := &compv1alpha1.TailoredProfileList{}
+	listOpts := client.ListOptions{
+		Namespace: instance.Namespace,
+	}
+	if err := r.Client.List(context.Background(), tpList, &listOpts); err != nil {
+		logger.Error(err, "Cannot list tailored profiles to check if they are ready")
+	}
+	for _, tp := range tpList.Items {
+		if tp.Status.State == compv1alpha1.TailoredProfileStateReady {
+			// we only check tailored profiles that are ready
+			if err := utils.IsTPCorrect(&tp, logger); err != nil {
+				// issue warning if tailored profile is not correct but don't fail the scan
+				r.Recorder.Eventf(instance, corev1.EventTypeWarning, "TailoredProfileDeprecatedSetting", "Tailored profile %s has deprecated settings: %s", tp.Name, err)
+			}
+		}
+	}
 
 	return true, nil
 }

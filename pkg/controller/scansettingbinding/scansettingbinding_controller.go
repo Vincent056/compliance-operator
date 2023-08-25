@@ -301,6 +301,76 @@ func isDifferentProduct(nodeProduct, incomingProduct string) bool {
 	return incomingProduct != "" && incomingProduct != nodeProduct
 }
 
+func (r *ReconcileScanSettingBinding) checkTPConfig(
+	binding *compliancev1alpha1.ScanSettingBinding,
+	logger logr.Logger,
+) error {
+	profilesToCheck := []compliancev1alpha1.NamedObjectReference{}
+
+	for i := range binding.Profiles {
+		prfRef := &binding.Profiles[i]
+
+		key := types.NamespacedName{Namespace: binding.Namespace, Name: prfRef.Name}
+		tp, err := getUnstructured(r, binding, key, prfRef.Kind, prfRef.APIGroup, logger)
+		if err != nil {
+			return fmt.Errorf("error getting TailoredProfile %s: %w", prfRef.Name, err)
+		}
+
+		profileType, err := utils.GetScanType(tp.GetAnnotations())
+		if err != nil {
+			// we don't want to fail here, since we don't want to block
+			// the creation of the ScanSettingBinding
+			// we assume that the profile is a platform profile
+			logger.Error(err, "error getting scan type from profile", "profile", tp.GetName())
+		}
+		// we only care about tailored profiles that are not node profiles
+		// since we migrate affected kubeletconfig platform rules to node rules
+		if profileType == compliancev1alpha1.ScanTypeNode {
+			continue
+		}
+
+		profilesToCheck = append(profilesToCheck, *prfRef)
+	}
+
+	if len(profilesToCheck) == 0 {
+		// all profiles we had were node profiles, so we don't need to check for the roles
+		return nil
+	}
+
+	for i := range profilesToCheck {
+		prfRef := &profilesToCheck[i]
+
+		if prfRef.Kind != "TailoredProfile" {
+			// we only care about tailored profiles
+			continue
+		}
+
+		key := types.NamespacedName{Namespace: binding.Namespace, Name: prfRef.Name}
+		tp, geterr := getUnstructured(r, binding, key, prfRef.Kind, prfRef.APIGroup, logger)
+		if geterr != nil {
+			return fmt.Errorf("error getting TailoredProfile %s: %w", prfRef.Name, geterr)
+		}
+
+		if err := isCmpv1Alpha1Gvk(tp, "TailoredProfile"); err != nil {
+			return common.WrapNonRetriableCtrlError(err)
+		}
+
+		v1alphaTp := compliancev1alpha1.TailoredProfile{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(tp.Object, &v1alphaTp); err != nil {
+			return common.WrapNonRetriableCtrlError(err)
+		}
+
+		err := utils.IsTPCorrect(&v1alphaTp, logger)
+		if err != nil {
+			msg := fmt.Sprintf("ScanSettingBinding %s has deprecated configuration: %s", binding.Name, err)
+			r.Eventf(binding, corev1.EventTypeWarning, "TailoredProfileDeprecatedSetting", msg)
+			return fmt.Errorf(msg)
+		}
+	}
+
+	return nil
+}
+
 func (r *ReconcileScanSettingBinding) applyConstraint(
 	instance *compliancev1alpha1.ScanSettingBinding,
 	suite *compliancev1alpha1.ComplianceSuite,
@@ -320,6 +390,15 @@ func (r *ReconcileScanSettingBinding) applyConstraint(
 
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(constraint.Object, &v1setting); err != nil {
 		return common.WrapNonRetriableCtrlError(err)
+	}
+
+	if err := r.checkTPConfig(instance, logger); err != nil {
+		ssb := instance.DeepCopy()
+		ssb.Status.SetConditionInvalid(err.Error())
+		if updateErr := r.Client.Status().Update(context.TODO(), ssb); updateErr != nil {
+			return fmt.Errorf("couldn't update ScanSettingBinding condition: %w", updateErr)
+		}
+		return fmt.Errorf("Found issues checking TailoredProfile configuration: %w", err)
 	}
 
 	if valErr := r.validateRoles(&v1setting); valErr != nil {
@@ -539,70 +618,8 @@ func fillProfileData(p *unstructured.Unstructured, scan *compliancev1alpha1.Comp
 func setScanType(scan *compliancev1alpha1.ComplianceScanSpecWrapper, annotations map[string]string) error {
 	var err error
 
-	scan.ComplianceScanSpec.ScanType, err = getScanType(annotations)
+	scan.ComplianceScanSpec.ScanType, err = utils.GetScanType(annotations)
 	return err
-}
-
-func getScanType(annotations map[string]string) (compliancev1alpha1.ComplianceScanType, error) {
-	platformType, ok := annotations[compliancev1alpha1.ProductTypeAnnotation]
-	if !ok {
-		return compliancev1alpha1.ScanTypeNode, fmt.Errorf("no %s label found", compliancev1alpha1.ProductTypeAnnotation)
-	}
-
-	switch strings.ToLower(platformType) {
-	case strings.ToLower(string(compliancev1alpha1.ScanTypeNode)):
-		return compliancev1alpha1.ScanTypeNode, nil
-	default:
-		break
-	}
-
-	return compliancev1alpha1.ScanTypePlatform, nil
-}
-
-func getTpScanType(
-	r *ReconcileScanSettingBinding,
-	binding *compliancev1alpha1.ScanSettingBinding,
-	apiGroup string,
-	prfObj *unstructured.Unstructured,
-	logger logr.Logger,
-) (compliancev1alpha1.ComplianceScanType, error) {
-	profileType, err := getScanType(prfObj.GetAnnotations())
-	if err == nil {
-		return profileType, nil
-	} else if prfObj.GetKind() != "TailoredProfile" {
-		// profiles are pretty much always annotated. If not, let's just assume it's a platform scan. If not,
-		// the scan would just fail later..
-		logger.Info("error getting profile scan type, assuming Platform", "profile", prfObj.GetName(), "error", err)
-		return compliancev1alpha1.ScanTypePlatform, nil
-	}
-
-	logger.Info("TailoredProfile had no annotation, trying the parent profile", "tailoredProfile", prfObj.GetName())
-	val, found, nsErr := unstructured.NestedString(prfObj.Object, "spec", "extends")
-	if nsErr != nil {
-		logger.Error(nsErr, "Fetching state of tailored profile",
-			"TailoredProfile", prfObj.GetName())
-		return compliancev1alpha1.ScanTypePlatform, nsErr
-	} else if !found {
-		// if there is no extends, then this is a custom-created profile. Custom profiles would indicate that they
-		// are node profiles either by using the -node suffix or by being properly annotated. Otherwise, even
-		// the plain scan profile would assume platform, so let's do the same here.
-		logger.Info("No extends field found in tailored profile", "TailoredProfile", prfObj.GetName())
-		return compliancev1alpha1.ScanTypePlatform, nil
-	}
-
-	key := types.NamespacedName{Namespace: prfObj.GetNamespace(), Name: val}
-	extendsObj, err := getUnstructured(r, binding, key, "Profile", apiGroup, logger)
-	if err != nil {
-		return compliancev1alpha1.ScanTypePlatform, fmt.Errorf("error getting Profile %s: %w", val, err)
-	}
-
-	extendsType, err := getScanType(extendsObj.GetAnnotations())
-	if err != nil {
-		return extendsType, common.NewNonRetriableCtrlError("error getting scan type for profile %s: %w", extendsObj.GetName(), err)
-	}
-
-	logger.Info("Got scan type from parent profile", "tailoredProfile", prfObj.GetName(), "profile", extendsObj.GetName(), "type", extendsType)
-	return extendsType, nil
 }
 
 func resolveProfileReference(r *ReconcileScanSettingBinding, instance *compliancev1alpha1.ScanSettingBinding, profile *unstructured.Unstructured, logger logr.Logger) (*profileReference, error) {

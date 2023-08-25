@@ -63,13 +63,22 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 // blank assignment to verify that ReconcileTailoredProfile implements reconcile.Reconciler
 var _ reconcile.Reconciler = &ReconcileTailoredProfile{}
 
+func (r *ReconcileTailoredProfile) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+	if r.Recorder == nil {
+		return
+	}
+
+	r.Recorder.Eventf(object, eventtype, reason, messageFmt, args...)
+}
+
 // ReconcileTailoredProfile reconciles a TailoredProfile object
 type ReconcileTailoredProfile struct {
 	// This Client, initialized using mgr.Client() above, is a split Client
 	// that reads objects from the cache and writes to the apiserver
-	Client  client.Client
-	Scheme  *runtime.Scheme
-	Metrics *metrics.Metrics
+	Client   client.Client
+	Scheme   *runtime.Scheme
+	Metrics  *metrics.Metrics
+	Recorder *common.SafeRecorder
 }
 
 // Reconcile reads that state of the cluster for a TailoredProfile object and makes changes based on the state read
@@ -109,13 +118,45 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 			return reconcile.Result{}, pbgetErr
 		}
 
-		// Make TailoredProfile be owned by the Profile it extends. This way
-		// we can ensure garbage collection happens.
-		// This update will trigger a requeue with the new object.
+		needsAnnotation := false
+
+		if instance.GetAnnotations() == nil {
+			needsAnnotation = true
+		} else {
+			if _, ok := instance.GetAnnotations()[cmpv1alpha1.ProductTypeAnnotation]; !ok {
+				needsAnnotation = true
+			}
+		}
+
+		if needsAnnotation {
+			tpCopy := instance.DeepCopy()
+			anns := tpCopy.GetAnnotations()
+			if anns == nil {
+				anns = make(map[string]string)
+			}
+
+			scanType, err := utils.GetScanType(p.GetAnnotations())
+			if err != nil {
+				logf.Log.Info("Error getting scan type for profile", "profile", p.Name, "error", err)
+			}
+			anns[cmpv1alpha1.ProductTypeAnnotation] = string(scanType)
+			tpCopy.SetAnnotations(anns)
+			// Make TailoredProfile be owned by the Profile it extends. This way
+			// we can ensure garbage collection happens.
+			// This update will trigger a requeue with the new object.
+			if needsControllerRef(tpCopy) {
+				return r.setOwnership(tpCopy, p)
+			} else {
+				r.Client.Update(context.TODO(), tpCopy)
+				return reconcile.Result{}, nil
+			}
+		}
+
 		if needsControllerRef(instance) {
 			tpCopy := instance.DeepCopy()
 			return r.setOwnership(tpCopy, p)
 		}
+
 	} else {
 		var pbgetErr error
 		pb, pbgetErr = r.getProfileBundleFromRulesOrVars(instance)
@@ -176,6 +217,18 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 		return reconcile.Result{}, varErr
 	}
 
+	err = utils.IsTPCorrect(instance, reqLogger)
+
+	if err != nil {
+		// we only surface error if the current state is not ready
+		if instance.Status.State != cmpv1alpha1.TailoredProfileStateReady {
+			suerr := r.handleTailoredProfileStatusError(instance, err)
+			return reconcile.Result{}, suerr
+		} else {
+			reqLogger.Info("TailoredProfile has deprecated references to rules or variables", "error", err.Error())
+			r.Eventf(instance, corev1.EventTypeWarning, "TailoredProfileDeprecatedSetting", "TailoredProfile has deprecated references to rules or variables: %s", err.Error())
+		}
+	}
 	// Get tailored profile config map
 	tpcm := newTailoredProfileCM(instance)
 
