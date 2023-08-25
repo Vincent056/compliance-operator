@@ -1260,6 +1260,9 @@ func TestKubeletConfigRemediation(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      suiteName,
 			Namespace: f.OperatorNamespace,
+			Labels: map[string]string{
+				compv1alpha1.OutdatedReferenceValidationDisable: "true",
+			},
 		},
 		Spec: compv1alpha1.TailoredProfileSpec{
 			Title:       "kubelet-remediation-test",

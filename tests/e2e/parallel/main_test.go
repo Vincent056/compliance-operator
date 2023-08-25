@@ -2138,7 +2138,7 @@ func TestScanSettingBinding(t *testing.T) {
 
 }
 
-func TestScanSettingBindingTailoringAndNonDefaultRole(t *testing.T) {
+func TestScanSettingBindingTailoringAndNonDefaultRoleFail(t *testing.T) {
 	t.Parallel()
 	f := framework.Global
 	tpName := "non-default-role-tp"
@@ -2167,11 +2167,16 @@ func TestScanSettingBindingTailoringAndNonDefaultRole(t *testing.T) {
 	}
 
 	createTPErr := f.Client.Create(context.TODO(), tp, nil)
-	if createTPErr == nil {
-		t.Fatal("expected error when creating tailored profile with deprecated role variables")
+	if createTPErr != nil {
+		t.Fatal(createTPErr)
 	}
 	defer f.Client.Delete(context.TODO(), tp)
-
+	// check the status of the TP to make sure it has errors
+	err := f.WaitForTailoredProfileStatus(tpName, f.OperatorNamespace, compv1alpha1.TailoredProfileStateError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), tp)
 }
 
 func TestScanSettingBindingUsesDefaultScanSetting(t *testing.T) {
@@ -2399,6 +2404,9 @@ func TestManualRulesTailoredProfile(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      suiteName,
 			Namespace: f.OperatorNamespace,
+			Labels: map[string]string{
+				compv1alpha1.OutdatedReferenceValidationDisable: "true",
+			},
 		},
 		Spec: compv1alpha1.TailoredProfileSpec{
 			Title:       "manual-rules-test",
@@ -2520,6 +2528,9 @@ func TestCheckDefaultKubeletConfig(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      suiteName,
 			Namespace: f.OperatorNamespace,
+			Labels: map[string]string{
+				compv1alpha1.OutdatedReferenceValidationDisable: "true",
+			},
 		},
 		Spec: compv1alpha1.TailoredProfileSpec{
 			Title:       "kubelet-default-test",

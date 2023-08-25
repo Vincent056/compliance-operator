@@ -198,6 +198,15 @@ func GetScanType(annotations map[string]string) (compliancev1alpha1.ComplianceSc
 func IsTPCorrect(
 	v1alphaTp *compliancev1alpha1.TailoredProfile, logger logr.Logger) error {
 
+	// check if the tailored profile has the disable outdated reference validation label
+	// if it does, skip the validation
+	labels := v1alphaTp.GetLabels()
+	if labels != nil {
+		if _, ok := labels[compliancev1alpha1.OutdatedReferenceValidationDisable]; ok {
+			return nil
+		}
+	}
+
 	profileType, err := GetScanType(v1alphaTp.GetAnnotations())
 	if err != nil {
 		logger.Info("Failed to get profile type from annotations", "error", err)
