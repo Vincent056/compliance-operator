@@ -53,6 +53,170 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
+func TestKubeletConfigRemediation(t *testing.T) {
+	f := framework.Global
+	var baselineImage = fmt.Sprintf("%s:%s", brokenContentImagePath, "new_kubeletconfig")
+	const requiredRule = "kubelet-enable-streaming-connections"
+	pbName := framework.GetObjNameFromTest(t)
+	prefixName := func(profName, ruleBaseName string) string { return profName + "-" + ruleBaseName }
+
+	ocpPb := &compv1alpha1.ProfileBundle{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pbName,
+			Namespace: f.OperatorNamespace,
+		},
+		Spec: compv1alpha1.ProfileBundleSpec{
+			ContentImage: baselineImage,
+			ContentFile:  framework.OcpContentFile,
+		},
+	}
+	if err := f.Client.Create(context.TODO(), ocpPb, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), ocpPb)
+	if err := f.WaitForProfileBundleStatus(pbName, compv1alpha1.DataStreamValid); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check that if the rule we are going to test is there
+	requiredRuleName := prefixName(pbName, requiredRule)
+	requiredVersionRuleName := prefixName(pbName, "version-detect-in-ocp")
+	requiredVariableName := prefixName(pbName, "var-streaming-connection-timeouts")
+	suiteName := "kubelet-remediation-test-suite-node"
+
+	tp := &compv1alpha1.TailoredProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      suiteName,
+			Namespace: f.OperatorNamespace,
+			Labels: map[string]string{
+				compv1alpha1.OutdatedReferenceValidationDisable: "true",
+			},
+		},
+		Spec: compv1alpha1.TailoredProfileSpec{
+			Title:       "kubelet-remediation-test-node",
+			Description: "A test tailored profile to test kubelet remediation",
+			EnableRules: []compv1alpha1.RuleReferenceSpec{
+				{
+					Name:      requiredRuleName,
+					Rationale: "To be tested",
+				},
+				{
+					Name:      requiredVersionRuleName,
+					Rationale: "To be tested",
+				},
+			},
+			SetValues: []compv1alpha1.VariableValueSpec{
+				{
+					Name:      requiredVariableName,
+					Rationale: "Value to be set",
+					Value:     "8h0m0s",
+				},
+			},
+		},
+	}
+	createTPErr := f.Client.Create(context.TODO(), tp, nil)
+	if createTPErr != nil {
+		t.Fatal(createTPErr)
+	}
+	defer f.Client.Delete(context.TODO(), tp)
+
+	ssb := &compv1alpha1.ScanSettingBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      suiteName,
+			Namespace: f.OperatorNamespace,
+		},
+		Profiles: []compv1alpha1.NamedObjectReference{
+			{
+				APIGroup: "compliance.openshift.io/v1alpha1",
+				Kind:     "TailoredProfile",
+				Name:     suiteName,
+			},
+		},
+		SettingsRef: &compv1alpha1.NamedObjectReference{
+			APIGroup: "compliance.openshift.io/v1alpha1",
+			Kind:     "ScanSetting",
+			Name:     "e2e-default-auto-apply",
+		},
+	}
+
+	err := f.Client.Create(context.TODO(), ssb, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), ssb)
+
+	// Ensure that all the scans in the suite have finished and are marked as Done
+	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scanName := suiteName + framework.TestPoolName
+
+	// We need to check that the remediation is auto-applied and save
+	// the object so we can delete it later
+	remName := scanName + "-kubelet-enable-streaming-connections"
+	f.WaitForGenericRemediationToBeAutoApplied(remName, f.OperatorNamespace)
+	err = f.WaitForGenericRemediationToBeAutoApplied(remName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = f.ReRunScan(scanName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Scan has been re-started
+	log.Printf("scan phase should be reset")
+	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseRunning, compv1alpha1.ResultNotAvailable)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure that all the scans in the suite have finished and are marked as Done
+	log.Printf("let's wait for it to be done now")
+	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseDone, compv1alpha1.ResultCompliant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Printf("scan re-run has finished")
+
+	// Now the check should be passing
+	checkResult := compv1alpha1.ComplianceCheckResult{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-kubelet-enable-streaming-connections", scanName),
+			Namespace: f.OperatorNamespace,
+		},
+		ID:       "xccdf_org.ssgproject.content_rule_kubelet_enable_streaming_connections",
+		Status:   compv1alpha1.CheckResultPass,
+		Severity: compv1alpha1.CheckResultSeverityMedium,
+	}
+	err = f.AssertHasCheck(suiteName, scanName, checkResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = f.AssertHasCheck(suiteName, scanName, checkResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The remediation must not be Outdated
+	remediation := &compv1alpha1.ComplianceRemediation{}
+	remNsName := types.NamespacedName{
+		Name:      remName,
+		Namespace: f.OperatorNamespace,
+	}
+	err = f.Client.Get(context.TODO(), remNsName, remediation)
+	if err != nil {
+		t.Fatalf("couldn't get remediation %s: %s", remName, err)
+	}
+	if remediation.Status.ApplicationState != compv1alpha1.RemediationApplied {
+		t.Fatalf("remediation %s is not applied, but %s", remName, remediation.Status.ApplicationState)
+	}
+}
+
 func TestScanStorageOutOfQuotaRangeFails(t *testing.T) {
 	f := framework.Global
 	rq := &corev1.ResourceQuota{
@@ -1249,153 +1413,6 @@ func TestVariableTemplate(t *testing.T) {
 	err = f.AssertHasCheck(suiteName, scanName, auditProfileSet)
 	if err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestKubeletConfigRemediation(t *testing.T) {
-	f := framework.Global
-	suiteName := "kubelet-remediation-test-suite"
-
-	tp := &compv1alpha1.TailoredProfile{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      suiteName,
-			Namespace: f.OperatorNamespace,
-			Labels: map[string]string{
-				compv1alpha1.OutdatedReferenceValidationDisable: "true",
-			},
-		},
-		Spec: compv1alpha1.TailoredProfileSpec{
-			Title:       "kubelet-remediation-test",
-			Description: "A test tailored profile to test kubelet remediation",
-			EnableRules: []compv1alpha1.RuleReferenceSpec{
-				{
-					Name:      "ocp4-kubelet-enable-streaming-connections",
-					Rationale: "To be tested",
-				},
-				{
-					Name:      "ocp4-version-detect-in-ocp",
-					Rationale: "To be tested",
-				},
-			},
-			SetValues: []compv1alpha1.VariableValueSpec{
-				{
-					Name:      "ocp4-var-streaming-connection-timeouts",
-					Rationale: "Value to be set",
-					Value:     "8h0m0s",
-				},
-				{
-					Name:      "ocp4-var-role-master",
-					Rationale: "Value to be set",
-					Value:     framework.TestPoolName,
-				},
-				{
-					Name:      "ocp4-var-role-worker",
-					Rationale: "Value to be set",
-					Value:     framework.TestPoolName,
-				},
-			},
-		},
-	}
-	createTPErr := f.Client.Create(context.TODO(), tp, nil)
-	if createTPErr != nil {
-		t.Fatal(createTPErr)
-	}
-	defer f.Client.Delete(context.TODO(), tp)
-
-	ssb := &compv1alpha1.ScanSettingBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      suiteName,
-			Namespace: f.OperatorNamespace,
-		},
-		Profiles: []compv1alpha1.NamedObjectReference{
-			{
-				APIGroup: "compliance.openshift.io/v1alpha1",
-				Kind:     "TailoredProfile",
-				Name:     suiteName,
-			},
-		},
-		SettingsRef: &compv1alpha1.NamedObjectReference{
-			APIGroup: "compliance.openshift.io/v1alpha1",
-			Kind:     "ScanSetting",
-			Name:     "e2e-default-auto-apply",
-		},
-	}
-
-	err := f.Client.Create(context.TODO(), ssb, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Client.Delete(context.TODO(), ssb)
-
-	// Ensure that all the scans in the suite have finished and are marked as Done
-	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	scanName := suiteName
-
-	// We need to check that the remediation is auto-applied and save
-	// the object so we can delete it later
-	remName := scanName + "-kubelet-enable-streaming-connections"
-	f.WaitForGenericRemediationToBeAutoApplied(remName, f.OperatorNamespace)
-	err = f.WaitForGenericRemediationToBeAutoApplied(remName, f.OperatorNamespace)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = f.ReRunScan(scanName, f.OperatorNamespace)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Scan has been re-started
-	log.Printf("scan phase should be reset")
-	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseRunning, compv1alpha1.ResultNotAvailable)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Ensure that all the scans in the suite have finished and are marked as Done
-	log.Printf("let's wait for it to be done now")
-	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseDone, compv1alpha1.ResultCompliant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	log.Printf("scan re-run has finished")
-
-	// Now the check should be passing
-	checkResult := compv1alpha1.ComplianceCheckResult{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-kubelet-enable-streaming-connections", suiteName),
-			Namespace: f.OperatorNamespace,
-		},
-		ID:       "xccdf_org.ssgproject.content_rule_kubelet_enable_streaming_connections",
-		Status:   compv1alpha1.CheckResultPass,
-		Severity: compv1alpha1.CheckResultSeverityMedium,
-	}
-	err = f.AssertHasCheck(suiteName, scanName, checkResult)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = f.AssertHasCheck(suiteName, scanName, checkResult)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// The remediation must not be Outdated
-	remediation := &compv1alpha1.ComplianceRemediation{}
-	remNsName := types.NamespacedName{
-		Name:      remName,
-		Namespace: f.OperatorNamespace,
-	}
-	err = f.Client.Get(context.TODO(), remNsName, remediation)
-	if err != nil {
-		t.Fatalf("couldn't get remediation %s: %s", remName, err)
-	}
-	if remediation.Status.ApplicationState != compv1alpha1.RemediationApplied {
-		t.Fatalf("remediation %s is not applied, but %s", remName, remediation.Status.ApplicationState)
 	}
 }
 

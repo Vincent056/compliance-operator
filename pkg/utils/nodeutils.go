@@ -237,7 +237,7 @@ func IsTPCorrect(
 	}
 
 	for vi := range v1alphaTp.Spec.SetValues {
-		variables := &v1alphaTp.Spec.EnableRules[vi]
+		variables := &v1alphaTp.Spec.SetValues[vi]
 		// check if any deprecated role variables are set
 		if _, ok := deprecatedRoleVariables[variables.Name]; ok {
 			msg += fmt.Sprintf("TailoredProfile %s has deprecated role variable %s, please remove variables from the TailoredProfile", v1alphaTp.GetName(), variables.Name)

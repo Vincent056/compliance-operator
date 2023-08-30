@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strings"
 
 	// we can suppress the gosec warning about sha1 here because we don't use sha1 for crypto
 	// purposes, but only as a string shortener
@@ -31,6 +32,7 @@ const (
 	RootCAPrefix                 = "root-ca-"
 	CertValidityDays             = 1
 	KubeletConfigCMSuffix        = "-runtime-kubeletconfig"
+	TailorConfigCMSuffix         = "-tp"
 )
 
 // New returns an error that formats as the given text.
@@ -50,6 +52,13 @@ func (e *podUnschedulableError) Error() string {
 
 func absContentPath(relContentPath string) string {
 	return path.Join("/content/", relContentPath)
+}
+
+func getTPNameFromCM(cmName string) string {
+	if strings.HasSuffix(cmName, TailorConfigCMSuffix) {
+		return strings.TrimSuffix(cmName, TailorConfigCMSuffix)
+	}
+	return ""
 }
 
 // Issue a server cert using the instance Root CA (it needs to be created prior to calling this function).

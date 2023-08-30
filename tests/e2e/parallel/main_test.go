@@ -2172,7 +2172,7 @@ func TestScanSettingBindingTailoringAndNonDefaultRoleFail(t *testing.T) {
 	}
 	defer f.Client.Delete(context.TODO(), tp)
 	// check the status of the TP to make sure it has errors
-	err := f.WaitForTailoredProfileStatus(tpName, f.OperatorNamespace, compv1alpha1.TailoredProfileStateError)
+	err := f.WaitForTailoredProfileStatus(f.OperatorNamespace, tpName, compv1alpha1.TailoredProfileStateError)
 	if err != nil {
 		t.Fatal(err)
 	}

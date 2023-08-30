@@ -136,6 +136,11 @@ func (f *Framework) createFromYAMLFile(p *string) error {
 	if err != nil {
 		return err
 	}
+	return f.createFromYAMLString(string(c))
+}
+
+func (f *Framework) createFromYAMLString(y string) error {
+	c := []byte(y)
 	documents, err := f.readYAML(c)
 	if err != nil {
 		return err
