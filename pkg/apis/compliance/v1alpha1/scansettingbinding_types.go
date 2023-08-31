@@ -5,6 +5,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type ScanSettingBindingStatusPhase string
+
+const (
+	ScanSettingBindingPhasePending   ScanSettingBindingStatusPhase = "PENDING"
+	ScanSettingBindingPhaseReady     ScanSettingBindingStatusPhase = "READY"
+	ScanSettingBindingPhaseInvalid   ScanSettingBindingStatusPhase = "INVALID"
+	ScanSettingBindingPhaseSuspended ScanSettingBindingStatusPhase = "SUSPENDED"
+)
+
 type NamedObjectReference struct {
 	Name     string `json:"name,omitempty"`
 	Kind     string `json:"kind,omitempty"`
@@ -16,6 +25,7 @@ type NamedObjectReference struct {
 // ScanSettingBinding is the Schema for the scansettingbindings API
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=scansettingbindings,scope=Namespaced,shortName=ssb
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status.phase`
 type ScanSettingBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -32,6 +42,7 @@ type ScanSettingBinding struct {
 type ScanSettingBindingSpec struct{}
 
 type ScanSettingBindingStatus struct {
+	Phase ScanSettingBindingStatusPhase `json:"phase,omitempty"`
 	// +optional
 	Conditions Conditions `json:"conditions,omitempty"`
 	// Reference to the object generated from this ScanSettingBinding
@@ -73,6 +84,15 @@ func (s *ScanSettingBindingStatus) SetConditionReady() {
 		Status:  corev1.ConditionTrue,
 		Reason:  "Processed",
 		Message: "The scan setting binding was successfully processed",
+	})
+}
+
+func (s *ScanSettingBindingStatus) SetConditionSuspended() {
+	s.Conditions.SetCondition(Condition{
+		Type:    "Suspended",
+		Status:  corev1.ConditionFalse,
+		Reason:  "Suspended",
+		Message: "The scan setting binding uses a scan setting that is suspended",
 	})
 }
 

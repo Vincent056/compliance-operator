@@ -787,6 +787,39 @@ func (f *Framework) WaitForScanStatus(namespace, name string, targetStatus compv
 	return nil
 }
 
+func (f *Framework) WaitForScanSettingBindingStatus(namespace, name string, targetStatus compv1alpha1.ScanSettingBindingStatusPhase) error {
+	b := &compv1alpha1.ScanSettingBinding{}
+	var err error
+	// retry and ignore errors until timeout
+	timeoutErr := wait.Poll(RetryInterval, Timeout, func() (bool, error) {
+		err = f.Client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: namespace}, b)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Printf("Waiting for availability of %s ScanSettingBinding\n", name)
+				return false, nil
+			}
+			log.Printf("Retrying. Got error: %v\n", err)
+			return false, nil
+		}
+
+		if b.Status.Phase == targetStatus {
+			return true, nil
+		}
+		log.Printf("Waiting for ScanSettingBinding %s to reach status %s, it is currently %s\n", name, targetStatus, b.Status.Phase)
+		return false, nil
+	})
+
+	if timeoutErr != nil {
+		return fmt.Errorf("failed waiting for ScanSettingBinding %s due to timeout: %s", name, timeoutErr)
+	}
+	if err != nil {
+		return fmt.Errorf("failed waiting for ScanSettingBinding %s to reach status %s: %s", name, targetStatus, err)
+	}
+
+	log.Printf("ScanSettingBinding status %s\n", b.Status.Phase)
+	return nil
+}
+
 // waitForScanStatus will poll until the compliancescan that we're lookingfor reaches a certain status, or until
 // a timeout is reached.
 func (f *Framework) WaitForSuiteScansStatus(namespace, name string, targetStatus compv1alpha1.ComplianceScanStatusPhase, targetComplianceStatus compv1alpha1.ComplianceScanStatusResult) error {
@@ -1012,6 +1045,28 @@ func (f *Framework) AssertScanHasValidPVCReferenceWithSize(scanName, size, names
 		return fmt.Errorf("Error: PVC '%s' storage doesn't match expected value. Has '%s', Expected '%s'", pvc.Name, current, expected)
 	}
 	return nil
+}
+
+func (f *Framework) AssertScanDoesNotExist(name, namespace string) error {
+	cs := &compv1alpha1.ComplianceScan{}
+	defer f.logContainerOutput(namespace, name)
+	err := f.Client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: namespace}, cs)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func (f *Framework) AssertComplianceSuiteDoesNotExist(name, namespace string) error {
+	cs := &compv1alpha1.ComplianceSuite{}
+	defer f.logContainerOutput(namespace, name)
+	err := f.Client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: namespace}, cs)
+	if apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return fmt.Errorf("Failed to assert ComplianceSuite %s does not exist.", name)
 }
 
 func (f *Framework) ScanHasWarnings(scanName, namespace string) error {
@@ -2209,5 +2264,33 @@ func (f *Framework) WaitForGenericRemediationToBeAutoApplied(remName, remNamespa
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func (f *Framework) AssertCronJobIsSuspended(name string) error {
+	job := &batchv1.CronJob{}
+	err := f.Client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: f.OperatorNamespace}, job)
+	if err != nil {
+		return err
+	}
+	if !*job.Spec.Suspend {
+		msg := fmt.Sprintf("Expected CronJob %s to be suspended", name)
+		return errors.New(msg)
+	}
+	log.Printf("CronJob %s is suspended", name)
+	return nil
+}
+
+func (f *Framework) AssertCronJobIsNotSuspended(name string) error {
+	job := &batchv1.CronJob{}
+	err := f.Client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: f.OperatorNamespace}, job)
+	if err != nil {
+		return err
+	}
+	if *job.Spec.Suspend {
+		msg := fmt.Sprintf("Expected CronJob %s to be active", name)
+		return errors.New(msg)
+	}
+	log.Printf("CronJob %s is active", name)
 	return nil
 }

@@ -72,11 +72,12 @@ func (r *ReconcileComplianceSuite) cronJobCompatCreate(
 		if !ok {
 			return fmt.Errorf("failed to cast object to v1 CronJob")
 		}
-		if getObjTyped.Spec.Schedule == suite.Spec.Schedule {
+		if getObjTyped.Spec.Schedule == suite.Spec.Schedule && getObjTyped.Spec.Suspend == &suite.Spec.Suspend {
 			return nil
 		}
 		cronJobCopy := getObjTyped.DeepCopy()
 		cronJobCopy.Spec.Schedule = suite.Spec.Schedule
+		cronJobCopy.Spec.Suspend = &suite.Spec.Suspend
 		logger.Info("Updating v1 rerunner", "CronJob.Name", cronJobCopy.GetName())
 		return r.Client.Update(context.TODO(), cronJobCopy)
 	}

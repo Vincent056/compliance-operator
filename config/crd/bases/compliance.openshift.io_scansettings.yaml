@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.12.0
+    controller-gen.kubebuilder.io/version: v0.13.0
   name: scansettings.compliance.openshift.io
 spec:
   group: compliance.openshift.io
@@ -246,6 +246,11 @@ spec:
               to scan all the nodes or not. `true` means that the operator should
               be strict and error out. `false` means that we don't need to be strict
               and we can proceed.
+            type: boolean
+          suspend:
+            default: false
+            description: Defines if a schedule should be suspended and is a boolean
+              value, defaulting to False.
             type: boolean
           timeout:
             default: 30m

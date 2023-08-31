@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	compsuitectrl "github.com/ComplianceAsCode/compliance-operator/pkg/controller/compliancesuite"
 	configv1 "github.com/openshift/api/config/v1"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -1405,6 +1406,183 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	}
 	if remediation.Status.ApplicationState != compv1alpha1.RemediationApplied {
 		t.Fatalf("remediation %s is not applied, but %s", remName, remediation.Status.ApplicationState)
+	}
+}
+
+func TestSuspendScanSetting(t *testing.T) {
+	f := framework.Global
+
+	// Creates a new `ScanSetting`, where the actual scan schedule doesn't necessarily matter, but `suspend` is set to `False`
+	scanSettingName := framework.GetObjNameFromTest(t) + "-scansetting"
+	scanSetting := compv1alpha1.ScanSetting{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      scanSettingName,
+			Namespace: f.OperatorNamespace,
+		},
+		ComplianceSuiteSettings: compv1alpha1.ComplianceSuiteSettings{
+			AutoApplyRemediations: false,
+			Schedule:              "0 1 * * *",
+			Suspend:               false,
+		},
+		Roles: []string{"master", "worker"},
+	}
+	if err := f.Client.Create(context.TODO(), &scanSetting, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), &scanSetting)
+
+	// Bind the new ScanSetting to a Profile
+	bindingName := framework.GetObjNameFromTest(t) + "-binding"
+	scanSettingBinding := compv1alpha1.ScanSettingBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bindingName,
+			Namespace: f.OperatorNamespace,
+		},
+		Profiles: []compv1alpha1.NamedObjectReference{
+			{
+				Name:     "ocp4-cis",
+				Kind:     "Profile",
+				APIGroup: "compliance.openshift.io/v1alpha1",
+			},
+		},
+		SettingsRef: &compv1alpha1.NamedObjectReference{
+			Name:     scanSetting.Name,
+			Kind:     "ScanSetting",
+			APIGroup: "compliance.openshift.io/v1alpha1",
+		},
+	}
+	if err := f.Client.Create(context.TODO(), &scanSettingBinding, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), &scanSettingBinding)
+
+	// Wait until the first scan completes since the CronJob is created
+	// after the scan is done
+	if err := f.WaitForSuiteScansStatus(f.OperatorNamespace, bindingName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := &compv1alpha1.ComplianceSuite{}
+	key := types.NamespacedName{Name: bindingName, Namespace: f.OperatorNamespace}
+	if err := f.Client.Get(context.TODO(), key, suite); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert the CronJob is not suspended.
+	if err := f.AssertCronJobIsNotSuspended(compsuitectrl.GetRerunnerName(suite.Name)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Suspend the `ScanSetting` using the `suspend` attribute
+	scanSettingUpdate := &compv1alpha1.ScanSetting{}
+	if err := f.Client.Get(context.TODO(), types.NamespacedName{Namespace: f.OperatorNamespace, Name: scanSettingName}, scanSettingUpdate); err != nil {
+		t.Fatalf("failed to get ScanSetting %s", scanSettingName)
+	}
+	scanSettingUpdate.Suspend = true
+	if err := f.Client.Update(context.TODO(), scanSettingUpdate); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.WaitForScanSettingBindingStatus(f.OperatorNamespace, bindingName, compv1alpha1.ScanSettingBindingPhaseSuspended); err != nil {
+		t.Fatalf("ScanSettingBinding %s failed to suspend", bindingName)
+	}
+	if err := f.AssertCronJobIsSuspended(compsuitectrl.GetRerunnerName(suite.Name)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume the `ComplianceScan` by updating the `ScanSetting.suspend` attribute to `False`
+	scanSettingUpdate = &compv1alpha1.ScanSetting{}
+	if err := f.Client.Get(context.TODO(), types.NamespacedName{Namespace: f.OperatorNamespace, Name: scanSettingName}, scanSettingUpdate); err != nil {
+		t.Fatalf("failed to get ScanSetting %s", scanSettingName)
+	}
+	scanSettingUpdate.Suspend = false
+	if err := f.Client.Update(context.TODO(), scanSettingUpdate); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.WaitForScanSettingBindingStatus(f.OperatorNamespace, bindingName, compv1alpha1.ScanSettingBindingPhaseReady); err != nil {
+		t.Fatalf("ScanSettingBinding %s failed to suspend", bindingName)
+	}
+	if err := f.AssertCronJobIsNotSuspended(compsuitectrl.GetRerunnerName(suite.Name)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSuspendScanSettingDoesNotCreateScan(t *testing.T) {
+	f := framework.Global
+
+	// Creates a new `ScanSetting` with `suspend` set to `True`
+	scanSettingName := framework.GetObjNameFromTest(t) + "-scansetting"
+	scanSetting := compv1alpha1.ScanSetting{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      scanSettingName,
+			Namespace: f.OperatorNamespace,
+		},
+		ComplianceSuiteSettings: compv1alpha1.ComplianceSuiteSettings{
+			AutoApplyRemediations: false,
+			Schedule:              "0 1 * * *",
+			Suspend:               true,
+		},
+		Roles: []string{"master", "worker"},
+	}
+	if err := f.Client.Create(context.TODO(), &scanSetting, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), &scanSetting)
+
+	// Bind the new `ScanSetting` to a `Profile`
+	bindingName := framework.GetObjNameFromTest(t) + "-binding"
+	scanSettingBinding := compv1alpha1.ScanSettingBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bindingName,
+			Namespace: f.OperatorNamespace,
+		},
+		Profiles: []compv1alpha1.NamedObjectReference{
+			{
+				Name:     "ocp4-cis",
+				Kind:     "Profile",
+				APIGroup: "compliance.openshift.io/v1alpha1",
+			},
+		},
+		SettingsRef: &compv1alpha1.NamedObjectReference{
+			Name:     scanSetting.Name,
+			Kind:     "ScanSetting",
+			APIGroup: "compliance.openshift.io/v1alpha1",
+		},
+	}
+	if err := f.Client.Create(context.TODO(), &scanSettingBinding, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), &scanSettingBinding)
+
+	// Assert the ScanSettingBinding is Suspended
+	if err := f.WaitForScanSettingBindingStatus(f.OperatorNamespace, bindingName, compv1alpha1.ScanSettingBindingPhaseSuspended); err != nil {
+		t.Fatalf("ScanSettingBinding %s failed to suspend: %v", bindingName, err)
+	}
+	if err := f.AssertComplianceSuiteDoesNotExist(bindingName, f.OperatorNamespace); err != nil {
+		t.Fatal(err)
+	}
+
+	scanName := "ocp4-cis"
+	err := f.AssertScanDoesNotExist(scanName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Update the `ScanSetting.suspend` attribute to `False`
+	scanSetting.Suspend = false
+	if err := f.Client.Update(context.TODO(), &scanSetting); err != nil {
+		t.Fatal(err)
+	}
+	// Assert the scan is performed
+	if err := f.WaitForSuiteScansStatus(f.OperatorNamespace, bindingName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.WaitForScanSettingBindingStatus(f.OperatorNamespace, bindingName, compv1alpha1.ScanSettingBindingPhaseReady); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.AssertCronJobIsNotSuspended(compsuitectrl.GetRerunnerName(bindingName)); err != nil {
+		t.Fatal(err)
 	}
 }
 

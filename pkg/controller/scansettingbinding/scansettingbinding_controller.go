@@ -122,6 +122,7 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 	if instance.Status.Conditions.GetCondition("Ready") == nil {
 		ssb := instance.DeepCopy()
 		ssb.Status.SetConditionPending()
+		ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhasePending
 		err := r.Client.Status().Update(context.TODO(), ssb)
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("Couldn't update ScanSettingBinding status: %s", err)
@@ -169,6 +170,7 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 				msg := "The TailoredProfile referenced has an error and is not usable"
 				ssb := instance.DeepCopy()
 				ssb.Status.SetConditionInvalid(msg)
+				ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseInvalid
 				if updateErr := r.Client.Status().Update(context.TODO(), ssb); updateErr != nil {
 					return reconcile.Result{}, fmt.Errorf("couldn't update ScanSettingBinding condition: %w", updateErr)
 				}
@@ -194,6 +196,7 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 
 			ssb := instance.DeepCopy()
 			ssb.Status.SetConditionInvalid(msg)
+			ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseInvalid
 			if updateErr := r.Client.Status().Update(context.TODO(), ssb); updateErr != nil {
 				return reconcile.Result{}, fmt.Errorf("couldn't update ScanSettingBinding condition: %w", updateErr)
 			}
@@ -211,6 +214,52 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 		}
 	}
 
+	scanSetting := &compliancev1alpha1.ScanSetting{}
+	if instance.SettingsRef != nil {
+		ssb := instance.DeepCopy()
+		err = r.Client.Get(context.TODO(), types.NamespacedName{Name: instance.SettingsRef.Name, Namespace: request.Namespace}, scanSetting)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("Failed to get ScanSetting: %s", err)
+		}
+		if scanSetting.ComplianceSuiteSettings.Suspend {
+			log.Info("Suspending ScanSettingBinding", "ScanSettingBinding", ssb.Name)
+			ssb.Status.SetConditionSuspended()
+			ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseSuspended
+			err := r.Client.Status().Update(context.TODO(), ssb)
+			if err != nil {
+				return reconcile.Result{}, fmt.Errorf("Failed to update ScanSettingBinding status: %s", err)
+			}
+			cs := compliancev1alpha1.ComplianceSuite{}
+			err = r.Client.Get(context.TODO(), types.NamespacedName{Name: instance.Name, Namespace: request.Namespace}, &cs)
+			// If the ComplianceSuite doesn't exist, then we should
+			// return and not requeue the request because the
+			// ScanSettingBinding is being created from a suspended
+			// state and we don't want to create the
+			// ComplianceSuite or kick off any scans, yet. If or
+			// when the ScanSetting is activated, we will proceed
+			// like normal and create the ComplianceSuite and its
+			// ComplianceScans.
+			if errors.IsNotFound(err) {
+				return reconcile.Result{}, nil
+			}
+
+		} else if !scanSetting.ComplianceSuiteSettings.Suspend {
+			log.Info("Resuming ScanSettingBinding", "ScanSettingBinding", ssb.Name)
+			ssb.Status.SetConditionReady()
+			ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseReady
+			err := r.Client.Status().Update(context.TODO(), ssb)
+			if err != nil {
+				return reconcile.Result{}, fmt.Errorf("Failed to update ScanSettingBinding status: %s", err)
+			}
+		}
+	}
+
+	instance = &compliancev1alpha1.ScanSettingBinding{}
+	err = r.Client.Get(context.TODO(), request.NamespacedName, instance)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("Failed to get ScanSettingBinding: %s", instance.Name)
+	}
+
 	found := compliancev1alpha1.ComplianceSuite{}
 	err = r.Client.Get(context.TODO(), types.NamespacedName{Namespace: suite.Namespace, Name: suite.Name}, &found)
 	if errors.IsNotFound(err) {
@@ -224,6 +273,7 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 
 			ssb := instance.DeepCopy()
 			ssb.Status.SetConditionReady()
+			ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseReady
 			ssb.Status.OutputRef = &corev1.TypedLocalObjectReference{
 				APIGroup: &compliancev1alpha1.SchemeGroupVersion.Group,
 				Kind:     "ComplianceSuite",
@@ -268,6 +318,7 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 	if scanSettingBindingStatusNeedsUpdate(instance) {
 		ssb := instance.DeepCopy()
 		ssb.Status.SetConditionReady()
+		ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseReady
 		group := found.GroupVersionKind().Group
 		ssb.Status.OutputRef = &corev1.TypedLocalObjectReference{
 			APIGroup: &group,

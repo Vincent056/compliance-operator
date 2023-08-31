@@ -82,6 +82,10 @@ type ComplianceSuiteSettings struct {
 	// Note the scan will still be triggered immediately, and the scheduled
 	// scans will start running only after the initial results are ready.
 	Schedule string `json:"schedule,omitempty"`
+	// Defines if a schedule should be suspended and is a boolean value,
+	// defaulting to False.
+	// +kubebuilder:default=false
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // ComplianceSuiteSpec defines the desired state of ComplianceSuite

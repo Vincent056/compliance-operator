@@ -293,6 +293,53 @@ or `ocp4-var-role-worker`:
 `oc get ccr -n openshift-compliance -o yaml | jq '.items[] | select(.valuesUsed | contains("ocp4-var-role-master") or contains("ocp4-var-role-worker"))'`
 
 
+## Suspending and resuming scan schedules
+
+The `ScanSetting` CRD exposes a `schedule` attribute that allows you to
+schedule compliance scans as a cron job syntax. The Compliance Operator uses
+Kubernetes `CronJob` resources to implement the schedule for a scan suite,
+which is sometimes referred to as a suite rerunner.
+
+Scan schedules are associated with a `ComplianceSuite`, which may contain at
+least one `ComplianceScan`. This means the schedule associated with a
+`ComplianceSuite` applies to all `ComplianceScan` objects within that suite.
+This may be useful to prevent scans from happening during planned maintenance
+windows, where results might be inaccurate depending on the state of the
+cluster.
+
+You can suspend a `ComplianceSuite` by updating the `ScanSetting` you used when
+you created the `ScanSettingBinding`.
+
+```
+$ oc patch ss/default -p 'suspend: true' --type merge
+```
+
+Any `ScanSettingBinding` using the suspended `ScanSetting` will show a
+`SUSPENDED` status:
+
+```
+$ oc get ssb
+NAME       STATUS
+cis-node   SUSPENDED
+```
+
+You can disable the `suspend` attribute to resume the scan schedule:
+
+```
+$ oc patch ss/default -p 'suspend: false' --type merge
+```
+
+The `ScanSettingBinding` will return to a `READY` state:
+
+```
+$ oc get ssb
+NAME       STATUS
+cis-node   READY
+```
+
+Note that this functionality does not pause, suspend, or stop a scan that is
+already in progress.
+
 ## Extracting raw results
 
 The scans provide two kinds of raw results: the full report in the ARF format

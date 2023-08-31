@@ -9,7 +9,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Enhancements
 
--
+- Users can now pause scan schedules by setting the `ScanSetting.suspend`
+  attribute to `True`. This allows users to suspend a scan, and reactivate it
+  without having to delete and recreate the `ScanSettingBinding`, making it
+  more ergonomic to pause scans during maintenance periods. See the
+  [enhancement](https://github.com/ComplianceAsCode/compliance-operator/pull/375)
+  for more details.
 
 ### Fixes
 
