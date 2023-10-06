@@ -89,7 +89,7 @@ func (s *ScanSettingBindingStatus) SetConditionReady() {
 
 func (s *ScanSettingBindingStatus) SetConditionSuspended() {
 	s.Conditions.SetCondition(Condition{
-		Type:    "Suspended",
+		Type:    "Ready",
 		Status:  corev1.ConditionFalse,
 		Reason:  "Suspended",
 		Message: "The scan setting binding uses a scan setting that is suspended",

@@ -214,55 +214,9 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 		}
 	}
 
-	scanSetting := &compliancev1alpha1.ScanSetting{}
-	if instance.SettingsRef != nil {
-		ssb := instance.DeepCopy()
-		err = r.Client.Get(context.TODO(), types.NamespacedName{Name: instance.SettingsRef.Name, Namespace: request.Namespace}, scanSetting)
-		if err != nil {
-			return reconcile.Result{}, fmt.Errorf("Failed to get ScanSetting: %s", err)
-		}
-		if scanSetting.ComplianceSuiteSettings.Suspend {
-			log.Info("Suspending ScanSettingBinding", "ScanSettingBinding", ssb.Name)
-			ssb.Status.SetConditionSuspended()
-			ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseSuspended
-			err := r.Client.Status().Update(context.TODO(), ssb)
-			if err != nil {
-				return reconcile.Result{}, fmt.Errorf("Failed to update ScanSettingBinding status: %s", err)
-			}
-			cs := compliancev1alpha1.ComplianceSuite{}
-			err = r.Client.Get(context.TODO(), types.NamespacedName{Name: instance.Name, Namespace: request.Namespace}, &cs)
-			// If the ComplianceSuite doesn't exist, then we should
-			// return and not requeue the request because the
-			// ScanSettingBinding is being created from a suspended
-			// state and we don't want to create the
-			// ComplianceSuite or kick off any scans, yet. If or
-			// when the ScanSetting is activated, we will proceed
-			// like normal and create the ComplianceSuite and its
-			// ComplianceScans.
-			if errors.IsNotFound(err) {
-				return reconcile.Result{}, nil
-			}
-
-		} else if !scanSetting.ComplianceSuiteSettings.Suspend {
-			log.Info("Resuming ScanSettingBinding", "ScanSettingBinding", ssb.Name)
-			ssb.Status.SetConditionReady()
-			ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseReady
-			err := r.Client.Status().Update(context.TODO(), ssb)
-			if err != nil {
-				return reconcile.Result{}, fmt.Errorf("Failed to update ScanSettingBinding status: %s", err)
-			}
-		}
-	}
-
-	instance = &compliancev1alpha1.ScanSettingBinding{}
-	err = r.Client.Get(context.TODO(), request.NamespacedName, instance)
-	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("Failed to get ScanSettingBinding: %s", instance.Name)
-	}
-
 	found := compliancev1alpha1.ComplianceSuite{}
 	err = r.Client.Get(context.TODO(), types.NamespacedName{Namespace: suite.Namespace, Name: suite.Name}, &found)
-	if errors.IsNotFound(err) {
+	if errors.IsNotFound(err) && !suite.Spec.Suspend {
 		err = r.Client.Create(context.TODO(), &suite)
 		if err == nil {
 			reqLogger.Info("Suite created", "suite.Name", suite.Name)
@@ -315,8 +269,18 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 		return reconcile.Result{}, err
 	}
 
-	if scanSettingBindingStatusNeedsUpdate(instance) {
+	if scanSettingBindingStatusNeedsUpdate(instance, &found) {
 		ssb := instance.DeepCopy()
+		// first set the condition to suspend if needed
+		if suite.Spec.Suspend {
+			log.Info("Suspending ScanSettingBinding", "ScanSettingBinding", ssb.Name)
+			ssb.Status.SetConditionSuspended()
+			ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseSuspended
+			if updateErr := r.Client.Status().Update(context.TODO(), ssb); updateErr != nil {
+				return reconcile.Result{}, fmt.Errorf("couldn't update ScanSettingBinding condition: %w", updateErr)
+			}
+			return reconcile.Result{}, nil
+		}
 		ssb.Status.SetConditionReady()
 		ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseReady
 		group := found.GroupVersionKind().Group
@@ -808,10 +772,24 @@ func isGvk(obj *unstructured.Unstructured, expectGvk *schema.GroupVersionKind) e
 }
 
 func suiteNeedsUpdate(have, found *compliancev1alpha1.ComplianceSuite) bool {
+	// check if found is nil, if so, we return true
+	if found == nil {
+		return true
+	}
 	// comparing spec would miss rename but we probably don't care
 	return !reflect.DeepEqual(have.Spec, found.Spec)
 }
 
-func scanSettingBindingStatusNeedsUpdate(ssb *compliancev1alpha1.ScanSettingBinding) bool {
-	return ssb.Status.Conditions.GetCondition("Ready") == nil || ssb.Status.OutputRef == nil || ssb.Status.OutputRef.Name == ""
+func scanSettingBindingStatusNeedsUpdate(ssb *compliancev1alpha1.ScanSettingBinding, suite *compliancev1alpha1.ComplianceSuite) bool {
+	if ssb.Status.Conditions.GetCondition("Ready") == nil || ssb.Status.OutputRef == nil || ssb.Status.OutputRef.Name == "" {
+		return true
+	}
+	// check if conditions are matching suspend status of the scansetting
+	readyCondition := ssb.Status.Conditions.GetCondition("Ready")
+
+	if suite.Spec.Suspend {
+		return readyCondition.Reason == "Suspended"
+	} else {
+		return readyCondition.Reason != "Suspended"
+	}
 }
