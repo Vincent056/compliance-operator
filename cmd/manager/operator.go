@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -88,6 +89,7 @@ var (
 	setupLog                   = logf.Log.WithName("setup")
 	metricsAddr                string
 	enableLeaderElection       bool
+	enableHTTP2                bool
 	probeAddr                  string
 	metricsHost                      = "0.0.0.0"
 	metricsServiceName               = "metrics"
@@ -140,6 +142,7 @@ func defineOperatorFlags(cmd *cobra.Command) {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.BoolVar(&enableHTTP2, "enable-http2", false, "If HTTP/2 should be enabled for the metrics and webhook servers.")
 
 	// Add the zap logger flag set to the CLI. The flag set must
 	// be added before calling pflag.Parse().
@@ -228,11 +231,18 @@ func RunOperator(cmd *cobra.Command, args []string) {
 	kubeClient := kubernetes.NewForConfigOrDie(cfg)
 	monitoringClient := monclientv1.NewForConfigOrDie(cfg)
 
+	disableHTTP2 := func(c *tls.Config) {
+		if enableHTTP2 {
+			return
+		}
+		c.NextProtos = []string{"http/1.1"}
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Cache:                  c,
 		Scheme:                 operatorScheme,
 		Metrics:                metricsserver.Options{BindAddress: fmt.Sprintf("%s:%d", metricsHost, metricsPort)},
-		WebhookServer:          webhook.NewServer(webhook.Options{Port: 9443}),
+		WebhookServer:          webhook.NewServer(webhook.Options{Port: 9443, TLSOpts: []func(config *tls.Config){disableHTTP2}}), //nolint:lll
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "81473831.openshift.io", // operator-sdk generated this for us
