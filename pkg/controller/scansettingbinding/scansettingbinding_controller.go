@@ -144,7 +144,6 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 		return reconcile.Result{}, err
 	}
 
-	var nodeProduct string
 	for i := range instance.Profiles {
 		ss := &instance.Profiles[i]
 
@@ -183,25 +182,9 @@ func (r *ReconcileScanSettingBinding) Reconcile(ctx context.Context, request rec
 			}
 		}
 
-		scan, product, err := newCompScanFromBindingProfile(r, instance, profileObj, log)
+		scan, _, err := newCompScanFromBindingProfile(r, instance, profileObj, log)
 		if err != nil {
 			return common.ReturnWithRetriableError(reqLogger, err)
-		}
-
-		nodeProduct = getRelevantProduct(nodeProduct, product)
-
-		if isDifferentProduct(nodeProduct, product) {
-			msg := fmt.Sprintf("ScanSettingBinding defines multiple products: %s and %s", product, nodeProduct)
-			r.Eventf(instance, corev1.EventTypeWarning, "MultipleProducts", msg)
-
-			ssb := instance.DeepCopy()
-			ssb.Status.SetConditionInvalid(msg)
-			ssb.Status.Phase = compliancev1alpha1.ScanSettingBindingPhaseInvalid
-			if updateErr := r.Client.Status().Update(context.TODO(), ssb); updateErr != nil {
-				return reconcile.Result{}, fmt.Errorf("couldn't update ScanSettingBinding condition: %w", updateErr)
-			}
-			// Don't requeue in this case, nothing we can do
-			return reconcile.Result{}, nil
 		}
 
 		suite.Spec.Scans = append(suite.Spec.Scans, *scan)

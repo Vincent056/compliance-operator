@@ -1606,6 +1606,95 @@ func TestSuspendScanSettingDoesNotCreateScan(t *testing.T) {
 	}
 }
 
+func TestMixProductScan(t *testing.T) {
+	f := framework.Global
+
+	// Creates a new `ScanSetting`, where the actual scan schedule doesn't necessarily matter, but `suspend` is set to `False`
+	scanSettingName := framework.GetObjNameFromTest(t) + "-mixproduct"
+	scanSetting := compv1alpha1.ScanSetting{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      scanSettingName,
+			Namespace: f.OperatorNamespace,
+		},
+		ComplianceSuiteSettings: compv1alpha1.ComplianceSuiteSettings{
+			AutoApplyRemediations: false,
+			Schedule:              "0 1 * * *",
+			Suspend:               false,
+		},
+		Roles: []string{"master", "worker"},
+	}
+	if err := f.Client.Create(context.TODO(), &scanSetting, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), &scanSetting)
+
+	// Bind the new ScanSetting to a Profile
+	bindingName := framework.GetObjNameFromTest(t) + "-binding"
+	scanSettingBinding := compv1alpha1.ScanSettingBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bindingName,
+			Namespace: f.OperatorNamespace,
+		},
+		Profiles: []compv1alpha1.NamedObjectReference{
+			{
+				Name:     "ocp4-moderate",
+				Kind:     "Profile",
+				APIGroup: "compliance.openshift.io/v1alpha1",
+			},
+			{
+				Name:     "ocp4-moderate-node",
+				Kind:     "Profile",
+				APIGroup: "compliance.openshift.io/v1alpha1",
+			},
+			{
+				Name:     "rhcos4-moderate",
+				Kind:     "Profile",
+				APIGroup: "compliance.openshift.io/v1alpha1",
+			},
+		},
+		SettingsRef: &compv1alpha1.NamedObjectReference{
+			Name:     scanSetting.Name,
+			Kind:     "ScanSetting",
+			APIGroup: "compliance.openshift.io/v1alpha1",
+		},
+	}
+	if err := f.Client.Create(context.TODO(), &scanSettingBinding, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), &scanSettingBinding)
+
+	// Wait until the scan completes
+	// after the scan is done
+	if err := f.WaitForSuiteScansStatus(f.OperatorNamespace, bindingName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := &compv1alpha1.ComplianceSuite{}
+	key := types.NamespacedName{Name: bindingName, Namespace: f.OperatorNamespace}
+	if err := f.Client.Get(context.TODO(), key, suite); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert all the scans are there and completed
+	expectedScan := []string{"ocp4-moderate", "ocp4-moderate-node-worker", "ocp4-moderate-node-master", "rhcos4-moderate-worker", "rhcos4-moderate-master"}
+	for _, scan := range expectedScan {
+		found := false
+		for _, s := range suite.Status.ScanStatuses {
+			if s.Name == scan {
+				found = true
+				if s.Phase != compv1alpha1.PhaseDone {
+					t.Fatalf("expected scan %s to be done", scan)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected scan %s not found", scan)
+		}
+	}
+
+}
+
 //testExecution{
 //	Name:       "TestNodeSchedulingErrorFailsTheScan",
 //	IsParallel: false,

@@ -747,7 +747,7 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 			Expect(err).To(BeNil())
 		})
 
-		It("Should not create a suite", func() {
+		It("Should create a suite", func() {
 			_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: ssb.Namespace,
@@ -762,10 +762,10 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 			}, ssb)
 			Expect(err).To(BeNil())
 			Expect(ssb.Status.Conditions.GetCondition("Ready")).ToNot(BeNil())
-			Expect(ssb.Status.Conditions.IsTrueFor("Ready")).To(BeFalse())
+			Expect(ssb.Status.Conditions.IsTrueFor("Ready")).To(BeTrue())
 
 			err = reconciler.Client.Get(context.TODO(), types.NamespacedName{Name: ssb.Name, Namespace: ssb.Namespace}, suite)
-			Expect(err).ToNot(BeNil())
+			Expect(err).To(BeNil())
 		})
 	})
 
