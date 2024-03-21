@@ -1410,6 +1410,73 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	if remediation.Status.ApplicationState != compv1alpha1.RemediationApplied {
 		t.Fatalf("remediation %s is not applied, but %s", remName, remediation.Status.ApplicationState)
 	}
+
+	// Now we want to update the value of the variable disableRemediations to true in ScanSetting
+	ssInstance := &compv1alpha1.ScanSetting{}
+	ssNsName := types.NamespacedName{
+		Name:      "e2e-default-auto-apply",
+		Namespace: f.OperatorNamespace,
+	}
+	err = f.Client.Get(context.TODO(), ssNsName, ssInstance)
+	if err != nil {
+		t.Fatalf("couldn't get scan setting %s: %s", ssNsName.Name, err)
+	}
+
+	// Update the value
+	ssInstance.DisableRemediations = true
+	err = f.Client.Update(context.Background(), ssInstance)
+	if err != nil {
+		t.Fatalf("failed to update scan setting %s: %s", ssNsName.Name, err)
+	}
+
+	// Now we get the tp and update the value
+	tpInstance := &compv1alpha1.TailoredProfile{}
+	tpNsName := types.NamespacedName{
+		Name:      tp.Name,
+		Namespace: f.OperatorNamespace,
+	}
+	err = f.Client.Get(context.TODO(), tpNsName, tpInstance)
+	if err != nil {
+		t.Fatalf("couldn't get tailored profile %s: %s", tp.Name, err)
+	}
+
+	// Update the value
+	tpInstance.Spec.SetValues[0].Value = "9h0m0s"
+	err = f.Client.Update(context.Background(), tpInstance)
+	if err != nil {
+		t.Fatalf("failed to update tailored profile %s: %s", tp.Name, err)
+	}
+
+	// Now we re-run the scan
+	err = f.ReRunScan(scanName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Scan has been re-started
+	log.Printf("scan phase should be reset")
+	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseRunning, compv1alpha1.ResultNotAvailable)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure that all the scans in the suite have finished and are marked as Done
+	log.Printf("let's wait for it to be done now")
+	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Printf("scan re-run has finished")
+
+	// Now check the remediation is not in error state
+	err = f.Client.Get(context.TODO(), remNsName, remediation)
+	if err != nil {
+		t.Fatalf("couldn't get remediation %s: %s", remName, err)
+	}
+	if remediation.Status.ApplicationState != compv1alpha1.RemediationError {
+		t.Fatalf("remediation %s is not in error state, but %s", remName, remediation.Status.ApplicationState)
+	}
+
 }
 
 func TestSuspendScanSetting(t *testing.T) {

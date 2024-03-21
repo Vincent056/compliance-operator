@@ -189,6 +189,25 @@ func (r *ReconcileComplianceRemediation) Reconcile(ctx context.Context, request 
 	return reconcile.Result{}, nil
 }
 
+func (r *ReconcileComplianceRemediation) canApplyRemediation(remediationInstance *compv1alpha1.ComplianceRemediation) (bool, error) {
+	suiteName := remediationInstance.GetLabels()[compv1alpha1.SuiteLabel]
+	if suiteName == "" {
+		return false, fmt.Errorf("no suite label found")
+	}
+
+	suite := &compv1alpha1.ComplianceSuite{}
+	if err := r.Client.Get(context.TODO(), types.NamespacedName{
+		Name: suiteName, Namespace: remediationInstance.Namespace}, suite); err != nil {
+		return false, fmt.Errorf("couldn't get suite: %w", err)
+	}
+
+	if suite.Spec.DisableRemediations {
+		return false, nil
+	}
+
+	return true, nil
+}
+
 // Gets a remediation and ensures the object exists in the cluster if the
 // remediation if applicable
 func (r *ReconcileComplianceRemediation) reconcileRemediation(instance *compv1alpha1.ComplianceRemediation, logger logr.Logger) error {
@@ -212,10 +231,12 @@ func (r *ReconcileComplianceRemediation) reconcileRemediation(instance *compv1al
 
 	objectLogger := logger.WithValues("Object.Name", obj.GetName(), "Object.Namespace", obj.GetNamespace(), "Object.Kind", obj.GetKind())
 	objectLogger.Info("Reconciling remediation object")
-
+	canApplyRemediation, err := r.canApplyRemediation(instance)
+	if err != nil {
+		return fmt.Errorf("failed to check if remediation can be applied: %w", err)
+	}
 	found := obj.DeepCopy()
-	err := r.Client.Get(context.TODO(), types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, found)
-
+	err = r.Client.Get(context.TODO(), types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, found)
 	if kerrors.IsForbidden(err) {
 		return common.NewNonRetriableCtrlError(
 			"Unable to get fix object from ComplianceRemediation. "+
@@ -234,6 +255,9 @@ func (r *ReconcileComplianceRemediation) reconcileRemediation(instance *compv1al
 			if err != nil {
 				return fmt.Errorf("failed to set related remediations to apply: %w", err)
 			}
+			if !canApplyRemediation {
+				return errors.New("We won't create the remediation because DisableRemediations is set to true in the ScanSetting")
+			}
 			err = r.createRemediation(obj, objectLogger)
 			if err != nil {
 				return fmt.Errorf("failed to create remediation: %w", err)
@@ -250,6 +274,9 @@ func (r *ReconcileComplianceRemediation) reconcileRemediation(instance *compv1al
 		err = r.setRemediations(instance, objectLogger, true)
 		if err != nil {
 			return fmt.Errorf("failed to set related remediations to apply: %w", err)
+		}
+		if !canApplyRemediation {
+			return errors.New("We won't patch the remediation because DisableRemediations is set to true in the ScanSetting")
 		}
 		return r.patchRemediation(obj, objectLogger)
 	}

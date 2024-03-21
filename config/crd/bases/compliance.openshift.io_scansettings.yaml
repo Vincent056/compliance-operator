@@ -38,6 +38,10 @@ spec:
           debug:
             description: Enable debug logging of workloads and OpenSCAP
             type: boolean
+          disableRemediations:
+            default: false
+            description: Defines whether remediations should be allowed to be applied
+            type: boolean
           httpsProxy:
             description: It is recommended to set the proxy via the config.openshift.io/Proxy
               object Defines a proxy for the scan to get external resources from.

@@ -55,6 +55,11 @@ spec:
                   automatically. This is done by deleting the "outdated" object from
                   the remediation.
                 type: boolean
+              disableRemediations:
+                default: false
+                description: Defines whether remediations should be allowed to be
+                  applied
+                type: boolean
               scans:
                 description: Contains a list of the scans to execute on the cluster
                 items:

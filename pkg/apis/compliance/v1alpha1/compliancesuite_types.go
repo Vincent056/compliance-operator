@@ -86,6 +86,9 @@ type ComplianceSuiteSettings struct {
 	// defaulting to False.
 	// +kubebuilder:default=false
 	Suspend bool `json:"suspend,omitempty"`
+	// Defines whether remediations should be allowed to be applied
+	// +kubebuilder:default=false
+	DisableRemediations bool `json:"disableRemediations,omitempty"`
 }
 
 // ComplianceSuiteSpec defines the desired state of ComplianceSuite
