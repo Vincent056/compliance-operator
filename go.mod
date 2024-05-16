@@ -5,14 +5,13 @@ go 1.20
 require (
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/gomega v1.30.0
-	github.com/wI2L/jsondiff v0.4.0
 	k8s.io/apimachinery v0.28.4
 	k8s.io/client-go v0.28.4
+	open-cluster-management.io/api v0.12.0
 	sigs.k8s.io/controller-runtime v0.16.3
 )
 
 require (
-	github.com/PaesslerAG/jsonpath v0.1.1
 	github.com/ajeddeloh/go-json v0.0.0-20200220154158-5ae607161559 // indirect
 	github.com/antchfx/xmlquery v1.3.18
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -90,7 +89,6 @@ require (
 )
 
 require (
-	github.com/PaesslerAG/gval v1.0.0 // indirect
 	github.com/antchfx/xpath v1.2.4 // indirect
 	github.com/aws/aws-sdk-go v1.50.25 // indirect
 	github.com/ccojocar/zxcvbn-go v1.0.1 // indirect

@@ -150,3 +150,11 @@ rules:
       - get
       - list
       - watch
+  - apiGroups:
+      - cluster.open-cluster-management.io
+    resources:
+      - clusterclaims
+    verbs:
+      - get
+      - list
+      - watch

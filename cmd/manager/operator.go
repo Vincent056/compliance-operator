@@ -20,6 +20,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 
+	"github.com/ComplianceAsCode/compliance-operator/pkg/apis"
+	compv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
+	"github.com/ComplianceAsCode/compliance-operator/pkg/controller"
+	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/common"
+	ctrlMetrics "github.com/ComplianceAsCode/compliance-operator/pkg/controller/metrics"
+	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
+	"github.com/ComplianceAsCode/compliance-operator/pkg/xccdf"
+	"github.com/ComplianceAsCode/compliance-operator/version"
 	ocpapi "github.com/openshift/api"
 	mcfgapi "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io"
 	monitoring "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
@@ -36,6 +44,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
+	clusterv1alpha1 "open-cluster-management.io/api/cluster/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,15 +54,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-
-	"github.com/ComplianceAsCode/compliance-operator/pkg/apis"
-	compv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
-	"github.com/ComplianceAsCode/compliance-operator/pkg/controller"
-	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/common"
-	ctrlMetrics "github.com/ComplianceAsCode/compliance-operator/pkg/controller/metrics"
-	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
-	"github.com/ComplianceAsCode/compliance-operator/pkg/xccdf"
-	"github.com/ComplianceAsCode/compliance-operator/version"
 )
 
 var OperatorCmd = &cobra.Command{
@@ -84,6 +84,7 @@ const (
 	PlatformHyperShift       PlatformType = "HyperShift"
 	PlatformOpenShiftOnPower PlatformType = "OpenShiftOnPower"
 	PlatformOpenShiftOnZ     PlatformType = "OpenShiftOnZ"
+	PlatformROSA             PlatformType = "ROSA"
 	PlatformUnknown          PlatformType = "Unknown"
 )
 
@@ -131,7 +132,11 @@ var (
 		PlatformHyperShift: {
 			"worker",
 		},
+		PlatformROSA: {
+			"worker",
+		},
 	}
+
 	serviceMonitorBearerTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	serviceMonitorTLSCAFile       = "/etc/prometheus/configmaps/serving-certs-ca-bundle/service-ca.crt"
 	alertName                     = "compliance"
@@ -323,9 +328,24 @@ func RunOperator(cmd *cobra.Command, args []string) {
 	// We need to set PLATFORM env var if the PLATFORM flag is set
 	pflag := os.Getenv("PLATFORM")
 	if pflag == "" {
+		clusterClaim := &clusterv1alpha1.ClusterClaim{}
+		if err := kubeClient.RESTClient().Get().RequestURI("/apis/cluster.open-cluster-management.io/v1alpha1/clusterclaims/product.open-cluster-management.io").Do(ctx).Into(clusterClaim); err != nil {
+			setupLog.Info("Couldn't get ClusterClaim. This is not fatal though.")
+			setupLog.Error(err, "")
+		} else {
+			// check the value of the clusterClaim
+			if clusterClaim.Spec.Value != "" {
+				pflag = clusterClaim.Spec.Value
+				os.Setenv("PLATFORM", pflag)
+			}
+		}
+	}
+
+	if pflag == "" {
 		pflag, _ = flags.GetString("platform")
 		os.Setenv("PLATFORM", pflag)
 	}
+
 	platform := getValidPlatform(pflag)
 
 	skipMetrics, _ := flags.GetBool("skip-metrics")
@@ -370,6 +390,8 @@ func getValidPlatform(p string) PlatformType {
 		return PlatformEKS
 	case strings.EqualFold(p, string(PlatformHyperShift)):
 		return PlatformHyperShift
+	case strings.EqualFold(p, string(PlatformROSA)):
+		return PlatformROSA
 	case strings.EqualFold(p, string(PlatformGeneric)):
 		return PlatformGeneric
 
