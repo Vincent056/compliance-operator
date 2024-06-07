@@ -1,10 +1,11 @@
 name: Release PR image
 
 on:
-  workflow_run:
-    workflows: [PR Image Trigger]
+  pull_request:
     types:
-      - completed
+    - opened
+    - reopened
+    - synchronize
 jobs:
   get-pr-number:
     name: Get PR number
