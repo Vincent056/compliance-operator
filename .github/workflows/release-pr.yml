@@ -5,7 +5,6 @@ on:
     workflows: [PR Image Trigger]
     types:
       - completed
-
 jobs:
   get-pr-number:
     name: Get PR number
@@ -40,80 +39,68 @@ jobs:
         run: |
           echo "pr_number=$(cat pr_number)" >> "$GITHUB_OUTPUT"
 
-  operator-container-push-pr:
-    needs: get-pr-number
-    permissions:
-      contents: read
-      id-token: write
-      packages: write
-    uses: metal-toolbox/container-push/.github/workflows/container-push.yml@main
-    with:
-      name: compliance-operator
-      registry_org: complianceascode
-      tag: ${{ needs.get-pr-number.outputs.pr-number }}
-      dockerfile_path: build/Dockerfile
-      vendor: 'Compliance Operator Authors'
-      checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
-  
-  bundle-container-push-pr:
-    needs: get-pr-number
-    permissions:
-      contents: read
-      id-token: write
-      packages: write
-    uses: metal-toolbox/container-push/.github/workflows/container-push.yml@main
-    with:
-      name: compliance-operator-bundle
-      registry_org: complianceascode
-      tag: ${{ needs.get-pr-number.outputs.pr-number }}
-      dockerfile_path: bundle.Dockerfile
-      vendor: 'Compliance Operator Authors'
-      checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
-
-  openscap-container-push-pr:
-    needs: get-pr-number
-    permissions:
-      contents: read
-      id-token: write
-      packages: write
-    uses: metal-toolbox/container-push/.github/workflows/container-push.yml@main
-    with:
-      name: openscap-ocp
-      registry_org: complianceascode
-      tag: ${{ needs.get-pr-number.outputs.pr-number }}
-      dockerfile_path: images/openscap/Dockerfile
-      vendor: 'Compliance Operator Authors'
-      checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
-
-  catalog-container-push-pr:
-    needs:
-    - get-pr-number
-    - bundle-container-push-pr
-    permissions:
-      contents: read
-      id-token: write
-      packages: write
-    uses: metal-toolbox/container-push/.github/workflows/container-push.yml@main
-    with:
-      name: compliance-operator-catalog
-      registry_org: complianceascode
-      tag: ${{ needs.get-pr-number.outputs.pr-number }}
-      dockerfile_path: catalog.Dockerfile
-      vendor: 'Compliance Operator Authors'
-      checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
-      prepare_command: |
-        make catalog-deploy CATALOG_IMG=ghcr.io/complianceascode/compliance-operator-catalog:${{ needs.get-pr-number.outputs.pr-number }}
-
-  comment-pr:
-    needs: 
-    - operator-container-push-pr
-    - bundle-container-push-pr
-    - openscap-container-push-pr
-    - catalog-container-push-pr
-    - get-pr-number
+  build:
     runs-on: ubuntu-latest
-    name: Comment on the PR
+    needs:
+      - get-pr-number
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/ppc64le
+          - linux/s390x
     steps:
+      - name: openscap-container-push-pr
+        uses: metal-toolbox/container-push/.github/workflows/container-push.yml@main
+        with:
+          name: openscap-ocp
+          registry_org: complianceascode
+          tag: ${{ needs.get-pr-number.outputs.pr-number }}
+          dockerfile_path: images/openscap/Dockerfile
+          vendor: 'Compliance Operator Authors'
+          checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
+          platforms: ${{ matrix.platform }}
+
+      - name: operator-container-push-pr
+        uses: metal-toolbox/container-push/.github/workflows/container-push.yml@main
+        with:
+          name: compliance-operator
+          registry_org: complianceascode
+          tag: ${{ needs.get-pr-number.outputs.pr-number }}
+          dockerfile_path: build/Dockerfile
+          vendor: 'Compliance Operator Authors'
+          checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
+          platforms: ${{ matrix.platform }}
+
+      - name: bundle-container-push-pr
+        uses: metal-toolbox/container-push/.github/workflows/container-push.yml@main
+        with:
+          name: compliance-operator-bundle
+          registry_org: complianceascode
+          tag: ${{ needs.get-pr-number.outputs.pr-number }}
+          dockerfile_path: bundle.Dockerfile
+          vendor: 'Compliance Operator Authors'
+          checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
+          platforms: ${{ matrix.platform }}
+
+      - name: catalog-container-push-pr
+        uses: metal-toolbox/container-push/.github/workflows/container-push.yml@main
+        with:
+          name: compliance-operator-catalog
+          registry_org: complianceascode
+          tag: ${{ needs.get-pr-number.outputs.pr-number }}
+          dockerfile_path: catalog.Dockerfile
+          vendor: 'Compliance Operator Authors'
+          checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
+          prepare_command: |
+            make catalog-deploy CATALOG_IMG=ghcr.io/complianceascode/compliance-operator-catalog:${{ needs.get-pr-number.outputs.pr-number }}
+          platforms: ${{ matrix.platform }}
+     
       - name: Checkout
         uses: actions/checkout@v4
 
