@@ -41,6 +41,12 @@ jobs:
           echo "pr_number=$(cat pr_number)" >> "$GITHUB_OUTPUT"
 
   operator-container-push-pr:
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/ppc64le
+          - linux/s390x
     needs: get-pr-number
     permissions:
       contents: read
@@ -54,8 +60,15 @@ jobs:
       dockerfile_path: build/Dockerfile
       vendor: 'Compliance Operator Authors'
       checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
+      platforms: ${{ matrix.platform }}
   
   bundle-container-push-pr:
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/ppc64le
+          - linux/s390x
     needs: get-pr-number
     permissions:
       contents: read
@@ -69,8 +82,15 @@ jobs:
       dockerfile_path: bundle.Dockerfile
       vendor: 'Compliance Operator Authors'
       checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
+      platforms: ${{ matrix.platform }}
 
   openscap-container-push-pr:
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/ppc64le
+          - linux/s390x
     needs: get-pr-number
     permissions:
       contents: read
@@ -84,8 +104,15 @@ jobs:
       dockerfile_path: images/openscap/Dockerfile
       vendor: 'Compliance Operator Authors'
       checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
+      platforms: ${{ matrix.platform }}
 
   catalog-container-push-pr:
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/ppc64le
+          - linux/s390x
     needs:
     - get-pr-number
     - bundle-container-push-pr
@@ -103,6 +130,7 @@ jobs:
       checkout_ref: refs/pull/${{ needs.get-pr-number.outputs.pr-number }}/head
       prepare_command: |
         make catalog-deploy CATALOG_IMG=ghcr.io/complianceascode/compliance-operator-catalog:${{ needs.get-pr-number.outputs.pr-number }}
+      platforms: ${{ matrix.platform }}
 
   comment-pr:
     needs: 
