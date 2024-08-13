@@ -245,8 +245,104 @@ func TestSuiteScan(t *testing.T) {
 		f.AssertCheckRemediation(checkVsyscall.Name, checkVsyscall.Namespace, true)
 	}
 
+	// ensure scan has total check counts annotation
+	err = f.AssertScanHasTotalCheckCounts(f.OperatorNamespace, workerScanName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = f.AssertScanHasTotalCheckCounts(f.OperatorNamespace, masterScanName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 }
 
+// TestSuiteScanHasCheckCounts tests that the scan has the correct check counts
+func TestSuiteScanHasCheckCounts(t *testing.T) {
+	f := framework.Global
+	suiteName := "test-suite-two-scans-check-counts"
+	workerScanName := fmt.Sprintf("%s-workers-scan", suiteName)
+	selectWorkers := map[string]string{
+		"node-role.kubernetes.io/worker": "",
+	}
+
+	masterScanName := fmt.Sprintf("%s-masters-scan", suiteName)
+	selectMasters := map[string]string{
+		"node-role.kubernetes.io/master": "",
+	}
+
+	exampleComplianceSuite := &compv1alpha1.ComplianceSuite{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      suiteName,
+			Namespace: f.OperatorNamespace,
+		},
+		Spec: compv1alpha1.ComplianceSuiteSpec{
+			ComplianceSuiteSettings: compv1alpha1.ComplianceSuiteSettings{
+				AutoApplyRemediations: false,
+			},
+			Scans: []compv1alpha1.ComplianceScanSpecWrapper{
+				{
+					ComplianceScanSpec: compv1alpha1.ComplianceScanSpec{
+						ContentImage: contentImagePath,
+						Profile:      "xccdf_org.ssgproject.content_profile_moderate",
+						Content:      framework.RhcosContentFile,
+						NodeSelector: selectWorkers,
+						ComplianceScanSettings: compv1alpha1.ComplianceScanSettings{
+							Debug: true,
+						},
+					},
+					Name: workerScanName,
+				},
+				{
+					ComplianceScanSpec: compv1alpha1.ComplianceScanSpec{
+						ContentImage: contentImagePath,
+						Profile:      "xccdf_org.ssgproject.content_profile_moderate",
+						Content:      framework.RhcosContentFile,
+						NodeSelector: selectMasters,
+						ComplianceScanSettings: compv1alpha1.ComplianceScanSettings{
+							Debug: true,
+						},
+					},
+					Name: masterScanName,
+				},
+			},
+		},
+	}
+
+	err := f.Client.Create(context.TODO(), exampleComplianceSuite, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Client.Delete(context.TODO(), exampleComplianceSuite)
+
+	// Ensure that all the scans in the suite have finished and are marked as Done
+	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// At this point, both scans should be non-compliant given our current content
+	err = f.AssertScanIsNonCompliant(workerScanName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.AssertScanIsNonCompliant(masterScanName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ensure scan has total check counts annotation
+	err = f.AssertScanHasTotalCheckCounts(f.OperatorNamespace, workerScanName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = f.AssertScanHasTotalCheckCounts(f.OperatorNamespace, masterScanName)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 func TestScanHasProfileGUID(t *testing.T) {
 	f := framework.Global
 	bindingName := framework.GetObjNameFromTest(t)

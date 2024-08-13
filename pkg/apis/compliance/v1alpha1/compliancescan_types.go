@@ -22,6 +22,10 @@ const ComplianceScanRescanAnnotation = "compliance.openshift.io/rescan"
 // "api-checks" in the annotation.
 const ComplianceScanTimeoutAnnotation = "compliance.openshift.io/timeout"
 
+// ComplianceCheckCountAnnotation indicates the number of checks
+// that a ComplianceScan has generated during the scan
+const ComplianceCheckCountAnnotation = "compliance.openshift.io/check-count"
+
 // ComplianceScanLabel serves as an indicator for which ComplianceScan
 // owns the referenced object
 const ComplianceScanLabel = "compliance.openshift.io/scan-name"
