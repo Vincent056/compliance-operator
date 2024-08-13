@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -286,6 +287,7 @@ func (r *ReconcileComplianceScan) phasePendingHandler(instance *compv1alpha1.Com
 	// Remove annotation if needed
 	if instance.NeedsRescan() {
 		instanceCopy := instance.DeepCopy()
+		delete(instanceCopy.Annotations, compv1alpha1.ComplianceCheckCountAnnotation)
 		delete(instanceCopy.Annotations, compv1alpha1.ComplianceScanRescanAnnotation)
 		delete(instanceCopy.Annotations, compv1alpha1.ComplianceScanTimeoutAnnotation)
 		err := r.Client.Update(context.TODO(), instanceCopy)
@@ -652,6 +654,26 @@ func (r *ReconcileComplianceScan) phaseAggregatingHandler(h scanTypeHandler, log
 		instance.Status.ErrorMessage = err.Error()
 	}
 
+	// count the number of checks that were run
+	checkCount, err := r.fetchResultCounts(instance, logger)
+	if err != nil {
+		logger.Error(err, "Cannot fetch the number of checks")
+		return reconcile.Result{}, err
+	}
+
+	instanceCopy := instance.DeepCopy()
+
+	if instanceCopy.Annotations == nil {
+		instanceCopy.Annotations = make(map[string]string)
+	}
+
+	// adding check count annotation
+	instanceCopy.Annotations[compv1alpha1.ComplianceCheckCountAnnotation] = strconv.Itoa(checkCount)
+
+	if err := r.Client.Update(context.TODO(), instanceCopy); err != nil {
+		logger.Error(err, "Cannot update the scan with the check count")
+		return reconcile.Result{}, err
+	}
 	instance.Status.Phase = compv1alpha1.PhaseDone
 	instance.Status.EndTimestamp = &metav1.Time{Time: time.Now()}
 	instance.Status.SetConditionReady()
@@ -662,6 +684,18 @@ func (r *ReconcileComplianceScan) phaseAggregatingHandler(h scanTypeHandler, log
 	}
 	r.Metrics.IncComplianceScanStatus(instance.Name, instance.Status)
 	return reconcile.Result{}, nil
+}
+
+func (r *ReconcileComplianceScan) fetchResultCounts(scan *compv1alpha1.ComplianceScan, logger logr.Logger) (int, error) {
+	var checkList compv1alpha1.ComplianceCheckResultList
+	checkListOpts := client.MatchingLabels{
+		compv1alpha1.ComplianceScanLabel: scan.Name,
+	}
+	if err := r.Client.List(context.TODO(), &checkList, &checkListOpts); err != nil {
+		logger.Error(err, "Cannot list the check results")
+		return 0, err
+	}
+	return len(checkList.Items), nil
 }
 
 func (r *ReconcileComplianceScan) phaseDoneHandler(h scanTypeHandler, instance *compv1alpha1.ComplianceScan, logger logr.Logger, doDelete bool) (reconcile.Result, error) {

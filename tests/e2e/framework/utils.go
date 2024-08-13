@@ -57,6 +57,41 @@ func (f *Framework) AssertMustHaveParsedProfiles(pbName, productType, productNam
 	return nil
 }
 
+// AssertScanHasTotalCheckCounts asserts that the scan has the expected total check counts
+func (f *Framework) AssertScanHasTotalCheckCounts(namespace, scanName string) error {
+	// check if scan has annotation
+	var scan compv1alpha1.ComplianceScan
+	key := types.NamespacedName{Namespace: namespace, Name: scanName}
+	if err := f.Client.Get(context.Background(), key, &scan); err != nil {
+		return err
+	}
+	if scan.Annotations == nil {
+		return fmt.Errorf("expected annotations to be not nil")
+	}
+	if scan.Annotations[compv1alpha1.ComplianceCheckCountAnnotation] == "" {
+		return fmt.Errorf("expected %s to be not empty", compv1alpha1.ComplianceCheckCountAnnotation)
+	}
+
+	gotCheckCount, err := strconv.Atoi(scan.Annotations[compv1alpha1.ComplianceCheckCountAnnotation])
+	if err != nil {
+		return fmt.Errorf("failed to convert %s to int: %w", compv1alpha1.ComplianceCheckCountAnnotation, err)
+	}
+
+	var checkList compv1alpha1.ComplianceCheckResultList
+	checkListOpts := client.MatchingLabels{
+		compv1alpha1.ComplianceScanLabel: scanName,
+	}
+	if err := f.Client.List(context.TODO(), &checkList, &checkListOpts); err != nil {
+		return err
+	}
+
+	if gotCheckCount != len(checkList.Items) {
+		return fmt.Errorf("expected %s to be %d, got %d instead", compv1alpha1.ComplianceCheckCountAnnotation, len(checkList.Items), gotCheckCount)
+	}
+
+	return nil
+}
+
 // AssertRuleCheckTypeChangedAnnotationKey asserts that the rule check type changed annotation key exists
 func (f *Framework) AssertRuleCheckTypeChangedAnnotationKey(namespace, ruleName, lastCheckType string) error {
 	var r compv1alpha1.Rule
