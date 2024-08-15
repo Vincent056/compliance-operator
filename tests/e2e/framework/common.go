@@ -1151,6 +1151,43 @@ func (f *Framework) AssertScanIsCompliant(name, namespace string) error {
 	return nil
 }
 
+// AssertComplianceCheckResultTimestamps checks if the timestamps in the compliance check results are within the expected range
+func (f *Framework) AssertComplianceCheckResultTimestamps(scanName, namespace string) error {
+	cs := &compv1alpha1.ComplianceScan{}
+	defer f.logContainerOutput(namespace, scanName)
+	err := f.Client.Get(context.TODO(), types.NamespacedName{Name: scanName, Namespace: namespace}, cs)
+	if err != nil {
+		return err
+	}
+	ccr := &compv1alpha1.ComplianceCheckResultList{}
+	lo := &client.ListOptions{
+		LabelSelector: labels.SelectorFromSet(map[string]string{
+			"compliance.openshift.io/scan-name": scanName,
+		}),
+	}
+	err = f.Client.List(context.TODO(), ccr, lo)
+	if err != nil {
+		return err
+	}
+	for _, check := range ccr.Items {
+		annotations := check.GetAnnotations()
+		if annotations == nil {
+			return fmt.Errorf("Check %s has no annotations", check.Name)
+		}
+		if annotations[compv1alpha1.LastScannedTimestampAnnotation] == "" {
+			return fmt.Errorf("Check %s has no timestamp annotation", check.Name)
+		}
+		timestamp, err := time.Parse(time.RFC3339, annotations[compv1alpha1.LastScannedTimestampAnnotation])
+		if err != nil {
+			return fmt.Errorf("Error parsing timestamp for check %s: %v", check.Name, err)
+		}
+		if timestamp.Before(cs.Status.StartTimestamp.Time) || timestamp.After(cs.Status.EndTimestamp.Time) {
+			return fmt.Errorf("Timestamp for check %s is not within the expected range: %v", check.Name, timestamp)
+		}
+	}
+	return nil
+}
+
 // AssertScanGUIDMatches checks if the scan has the expected GUID
 func (f *Framework) AssertScanGUIDMatches(name, namespace, expectedGUID string) error {
 	cs := &compv1alpha1.ComplianceScan{}

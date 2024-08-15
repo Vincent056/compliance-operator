@@ -308,9 +308,6 @@ func createOrUpdateOneResult(crClient aggregatorCrClient, owner metav1.Object, l
 	}
 
 	res.SetLabels(labels)
-	if annotations != nil {
-		res.SetAnnotations(annotations)
-	}
 
 	name := res.GetName()
 
@@ -318,9 +315,17 @@ func createOrUpdateOneResult(crClient aggregatorCrClient, owner metav1.Object, l
 		var err error
 		if !exists {
 			cmdLog.Info("Creating object", "kind", kind, "name", name)
+			annotations = setTimestampAnnotations(owner, annotations)
+			if annotations != nil {
+				res.SetAnnotations(annotations)
+			}
 			err = crClient.getClient().Create(context.TODO(), res)
 		} else {
 			cmdLog.Info("Updating object", "kind", kind, "name", name)
+			annotations = setTimestampAnnotations(owner, annotations)
+			if annotations != nil {
+				res.SetAnnotations(annotations)
+			}
 			err = crClient.getClient().Update(context.TODO(), res)
 		}
 		if err != nil && !errors.IsAlreadyExists(err) {
@@ -334,6 +339,17 @@ func createOrUpdateOneResult(crClient aggregatorCrClient, owner metav1.Object, l
 		return err
 	}
 	return nil
+}
+
+func setTimestampAnnotations(owner metav1.Object, annotations map[string]string) map[string]string {
+	// If the owner is a scan, we should set the last scanned timestamp
+	if scan, ok := owner.(*compv1alpha1.ComplianceScan); ok {
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations[compv1alpha1.LastScannedTimestampAnnotation] = scan.Status.StartTimestamp.Format(time.RFC3339)
+	}
+	return annotations
 }
 
 func shouldSkipRemediation(

@@ -22,6 +22,9 @@ const ComplianceCheckResultHasRemediation = "compliance.openshift.io/automated-r
 // across the target nodes
 const ComplianceCheckInconsistentLabel = "compliance.openshift.io/inconsistent-check"
 
+// LastScannedTimestampAnnotation
+const LastScannedTimestampAnnotation = "compliance.openshift.io/last-scanned-timestamp"
+
 // ComplianceCheckResultRuleAnnotation exposes the DNS-friendly name of a rule as a label.
 // This provides a way to link a result to a Rule object.
 const ComplianceCheckResultRuleAnnotation = "compliance.openshift.io/rule"

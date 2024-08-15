@@ -26,7 +26,8 @@ import (
 )
 
 const (
-	maxRetries = 15
+	maxRetries             = 15
+	maxRetriesForTimestamp = 3
 )
 
 var cmdLog = logf.Log.WithName("cmd")

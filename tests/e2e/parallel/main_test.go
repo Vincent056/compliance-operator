@@ -652,6 +652,63 @@ func TestSingleScanSucceeds(t *testing.T) {
 	}
 }
 
+func TestSingleScanTimestamps(t *testing.T) {
+	t.Parallel()
+	f := framework.Global
+
+	scanName := framework.GetObjNameFromTest(t)
+	testScan := &compv1alpha1.ComplianceScan{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      scanName,
+			Namespace: f.OperatorNamespace,
+		},
+		Spec: compv1alpha1.ComplianceScanSpec{
+			Profile: "xccdf_org.ssgproject.content_profile_moderate",
+			Content: framework.RhcosContentFile,
+			Rule:    "xccdf_org.ssgproject.content_rule_no_netrc_files",
+			ComplianceScanSettings: compv1alpha1.ComplianceScanSettings{
+				Debug: true,
+			},
+		},
+	}
+	// use Context's create helper to create the object and add a cleanup function for the new object
+	err := f.Client.Create(context.TODO(), testScan, nil)
+	if err != nil {
+		t.Fatalf("failed to create scan %s: %s", scanName, err)
+	}
+	defer f.Client.Delete(context.TODO(), testScan)
+
+	err = f.WaitForScanStatus(f.OperatorNamespace, scanName, compv1alpha1.PhaseDone)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// assertComplianceCheckResultTimestamps checks that the timestamps are set
+	// and that they are set to the same value of startTimestamp of the scan
+	err = f.AssertComplianceCheckResultTimestamps(scanName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// rerun the scan
+	err = f.ReRunScan(scanName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.WaitForScanStatus(f.OperatorNamespace, scanName, compv1alpha1.PhaseDone)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// assertComplianceCheckResultTimestamps checks that the timestamps are set
+	// and that they are set to the same value of startTimestamp of the scan
+	err = f.AssertComplianceCheckResultTimestamps(scanName, f.OperatorNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+}
+
 func TestScanProducesRemediations(t *testing.T) {
 	t.Parallel()
 	f := framework.Global
