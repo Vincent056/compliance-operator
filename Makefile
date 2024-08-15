@@ -443,6 +443,8 @@ bundle: check-operator-version operator-sdk manifests update-skip-range kustomiz
 	git restore config/manifests/kustomization.yaml
 	@echo "Replacing RELATED_IMAGE_OPERATOR env reference in $(BUNDLE_CSV_FILE)"
 	@sed -i 's%$(DEFAULT_OPERATOR_IMAGE)%$(OPERATOR_IMAGE)%' $(BUNDLE_CSV_FILE)
+	@echo "Replacing RELATED_IMAGE_OPENSCAP env reference in $(BUNDLE_CSV_FILE)"
+	@sed -i 's%$(DEFAULT_OPENSCAP_IMAGE)%$(OPENSCAP_IMAGE)%' $(BUNDLE_CSV_FILE)
 	$(SDK_BIN) bundle validate ./bundle
 
 .PHONY: bundle-image
@@ -450,6 +452,8 @@ bundle-image: bundle ## Build the bundle image.
 	$(RUNTIME) $(RUNTIME_BUILD_CMD) -f bundle.Dockerfile -t $(BUNDLE_IMG) .
 	@echo "Restoring RELATED_IMAGE_OPERATOR env reference in $(BUNDLE_CSV_FILE)"
 	@sed -i 's%$(OPERATOR_IMAGE)%$(DEFAULT_OPERATOR_IMAGE)%' $(BUNDLE_CSV_FILE)
+	@echo "Restoring RELATED_IMAGE_OPENSCAP env reference in $(BUNDLE_CSV_FILE)"
+	@sed -i 's%$(OPENSCAP_IMAGE)%$(DEFAULT_OPENSCAP_IMAGE)%' $(BUNDLE_CSV_FILE)
 
 .PHONY: openscap-image
 openscap-image:
