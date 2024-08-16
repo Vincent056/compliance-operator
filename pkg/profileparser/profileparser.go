@@ -830,6 +830,10 @@ func newStandardParser() *referenceParser {
 	if pcidssperr != nil {
 		log.Error(nciperr, "Could not register PCI-DSS reference parser") // not much we can do here..
 	}
+	pcidss4perr := p.registerStandard("PCI-DSS-4-0", `^https://docs-prv\.pcisecuritystandards\.org/PCI%20DSS/Standard/PCI-DSS-v4_0\.pdf$`)
+	if pcidss4perr != nil {
+		log.Error(nciperr, "Could not register PCI-DSS-4-0 reference parser") // not much we can do here..
+	}
 	stigperr := p.registerStandard("STIG", `^https://public\.cyber\.mil/stigs/downloads/\?_dl_facet_stigs=container-platform`)
 	if stigperr != nil {
 		log.Error(stigperr, "Could not register STIG reference parser") // not much we can do here..
