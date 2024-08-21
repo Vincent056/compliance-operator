@@ -402,6 +402,8 @@ k8s.io/kube-openapi v0.0.0-20240228011516-70dd3763d340 h1:BZqlfIlq5YbRMFko6/PM7F
 k8s.io/kube-openapi v0.0.0-20240228011516-70dd3763d340/go.mod h1:yD4MZYeKMBwQKVht279WycxKyM84kkAx2DPrTXaeb98=
 k8s.io/pod-security-admission v0.30.3 h1:UDGZWR3ry/XrN/Ki/w7qrp49OwgQsKyh+6xWbexvJi8=
 k8s.io/pod-security-admission v0.30.3/go.mod h1:T1EQSOLl9YyDMnXNJfsq2jeci6uoymY0mrRkkKihd98=
+k8s.io/pod-security-admission v0.31.0 h1:z8lTQ1+EZ8aX+xTrDTT2Udt1b9mzci2o2L2O4TUWSUU=
+k8s.io/pod-security-admission v0.31.0/go.mod h1:672PutRBAIEOJJljOHDYhXiXrQDDFdB3z7hddN3Pv5c=
 k8s.io/utils v0.0.0-20240711033017-18e509b52bc8 h1:pUdcCO1Lk/tbT5ztQWOBi5HBgbBP1J8+AsQnQCKsi8A=
 k8s.io/utils v0.0.0-20240711033017-18e509b52bc8/go.mod h1:OLgZIPagt7ERELqWJFomSt595RzquPNLL48iOWgYOg0=
 open-cluster-management.io/api v0.14.0 h1:yjhnNeO/QudiIoEi0i/yUYmP3iElAfUgtj4pHMV+4uM=
