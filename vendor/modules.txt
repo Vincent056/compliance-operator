@@ -408,7 +408,7 @@ github.com/openshift/client-go/operator/informers/externalversions/operator/v1
 github.com/openshift/client-go/operator/informers/externalversions/operator/v1alpha1
 github.com/openshift/client-go/operator/listers/operator/v1
 github.com/openshift/client-go/operator/listers/operator/v1alpha1
-# github.com/openshift/library-go v0.0.0-20240731134552-8211143dfde7
+# github.com/openshift/library-go v0.0.0-20240821135116-ade3966091b1
 ## explicit; go 1.22.0
 github.com/openshift/library-go/pkg/certs
 github.com/openshift/library-go/pkg/controller/factory
