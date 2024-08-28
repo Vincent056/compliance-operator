@@ -2,7 +2,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.13.0
+    controller-gen.kubebuilder.io/version: v0.16.1
   creationTimestamp: null
   name: rules.compliance.openshift.io
 spec:
@@ -20,18 +20,22 @@ spec:
         description: Rule is the Schema for the rules API
         properties:
           apiVersion:
-            description: 'APIVersion defines the versioned schema of this representation
-              of an object. Servers should convert recognized schemas to the latest
-              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           availableFixes:
             description: The Available fixes
             items:
-              description: FixDefinition Specifies a fix or remediation that applies
-                to a rule
+              description: |-
+                FixDefinition Specifies a fix or remediation
+                that applies to a rule
               properties:
                 disruption:
-                  description: An estimate of the potential disruption or operational
+                  description: |-
+                    An estimate of the potential disruption or operational
                     degradation that this fix will impose in the target system
                   type: string
                 fixObject:
@@ -47,8 +51,9 @@ spec:
             type: array
             x-kubernetes-list-type: atomic
           checkType:
-            description: 'What type of check will this rule execute: Platform, Node
-              or none (represented by an empty string)'
+            description: |-
+              What type of check will this rule execute:
+              Platform, Node or none (represented by an empty string)
             type: string
           description:
             description: The description of the Rule
@@ -60,9 +65,12 @@ spec:
             description: Instructions for auditing this specific rule
             type: string
           kind:
-            description: 'Kind is a string value representing the REST resource this
-              object represents. Servers may infer this from the endpoint the client
-              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object

@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.13.0
+    controller-gen.kubebuilder.io/version: v0.16.1
   name: complianceremediations.compliance.openshift.io
 spec:
   group: compliance.openshift.io
@@ -26,18 +26,24 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ComplianceRemediation represents a remediation that can be applied
-          to the cluster to fix the found issues.
+        description: |-
+          ComplianceRemediation represents a remediation that can be applied to the
+          cluster to fix the found issues.
         properties:
           apiVersion:
-            description: 'APIVersion defines the versioned schema of this representation
-              of an object. Servers should convert recognized schemas to the latest
-              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
-            description: 'Kind is a string value representing the REST resource this
-              object represents. Servers may infer this from the endpoint the client
-              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -49,38 +55,40 @@ spec:
                   by the operator
                 type: boolean
               current:
-                description: Defines the remediation that is proposed by the scan.
-                  If there is no "outdated" remediation in this object, the "current"
-                  remediation is what will be applied.
+                description: |-
+                  Defines the remediation that is proposed by the scan. If there is no "outdated"
+                  remediation in this object, the "current" remediation is what will be applied.
                 properties:
                   object:
-                    description: The remediation payload. This would normally be a
-                      full Kubernetes object.
+                    description: |-
+                      The remediation payload. This would normally be a full Kubernetes
+                      object.
                     type: object
                     x-kubernetes-embedded-resource: true
                     x-kubernetes-preserve-unknown-fields: true
                 type: object
               outdated:
-                description: In case there was a previous remediation proposed by
-                  a previous scan, and that remediation now differs, the old remediation
-                  will be kept in this "outdated" key. This requires admin intervention
-                  to remove this outdated object and ensure the current is what's
-                  applied.
+                description: |-
+                  In case there was a previous remediation proposed by a previous scan, and that remediation
+                  now differs, the old remediation will be kept in this "outdated" key. This requires admin
+                  intervention to remove this outdated object and ensure the current is what's applied.
                 properties:
                   object:
-                    description: The remediation payload. This would normally be a
-                      full Kubernetes object.
+                    description: |-
+                      The remediation payload. This would normally be a full Kubernetes
+                      object.
                     type: object
                     x-kubernetes-embedded-resource: true
                     x-kubernetes-preserve-unknown-fields: true
                 type: object
               type:
                 default: Configuration
-                description: 'The type of remediation that this object applies. The
-                  available types are: Configuration and Enforcement. Where the Configuration
-                  type fixes a configuration to match a compliance expectation. The
-                  Enforcement type, on the other hand, ensures that the cluster stays
-                  in compliance via means of authorization.'
+                description: |-
+                  The type of remediation that this object applies. The available
+                  types are: Configuration and Enforcement. Where the Configuration
+                  type fixes a configuration to match a compliance expectation.
+                  The Enforcement type, on the other hand, ensures that the cluster
+                  stays in compliance via means of authorization.
                 enum:
                 - Configuration
                 - Enforcement
