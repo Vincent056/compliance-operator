@@ -510,7 +510,7 @@ deploy: manifests kustomize install ## Deploy controller to the K8s cluster spec
 	cd config/manager && $(KUSTOMIZE) edit set image $(APP_NAME)=${IMG}
 	$(KUSTOMIZE) build config/default | sed -e 's%$(DEFAULT_OPERATOR_IMAGE)%$(OPERATOR_IMAGE)%' -e 's%$(DEFAULT_CONTENT_IMAGE)%$(CONTENT_IMAGE)%' | kubectl apply -f -
 
-.PHONY: deploy-to-cluster
+.PHONY: deploy-local
 deploy-local: manifests kustomize image-to-cluster install  ## Deploy after pushing images to the cluster registry.
 	cd config/manager && $(KUSTOMIZE) edit set image $(APP_NAME)=${OPERATOR_IMAGE}
 	$(KUSTOMIZE) build config/$(PLATFORM) | sed -e 's%$(DEFAULT_OPERATOR_IMAGE)%$(OPERATOR_IMAGE)%' -e 's%$(DEFAULT_CONTENT_IMAGE)%$(CONTENT_IMAGE)%' -e 's%$(DEFAULT_OPENSCAP_IMAGE)%$(OPENSCAP_IMAGE)%' | kubectl apply -f -
