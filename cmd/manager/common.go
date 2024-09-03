@@ -26,8 +26,10 @@ import (
 )
 
 const (
-	maxRetries             = 15
-	maxRetriesForTimestamp = 3
+	maxRetries                          = 15
+	maxRetriesForTimestamp              = 3
+	complianceOperatorMetricsSA         = "compliance-operator-metrics"
+	complianceOperatorMetricsSecretName = "compliance-operator-metrics-token"
 )
 
 var cmdLog = logf.Log.WithName("cmd")

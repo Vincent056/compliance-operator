@@ -9,5 +9,8 @@ roleRef:
   name: compliance-operator-metrics
 subjects:
   - kind: ServiceAccount
+    name: compliance-operator-metrics
+    namespace: openshift-compliance
+  - kind: ServiceAccount
     name: prometheus-k8s
     namespace: openshift-monitoring

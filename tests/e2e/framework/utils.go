@@ -3,6 +3,7 @@ package framework
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	compv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
 	imagev1 "github.com/openshift/api/image/v1"
+	promv1 "github.com/prometheus/prometheus/web/api/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -380,6 +382,134 @@ func (f *Framework) AssertMetricsEndpointUsesHTTPVersion(endpoint, version strin
 	}
 	if !strings.Contains(string(out), version) {
 		return fmt.Errorf("metric endpoint is not using %s", version)
+	}
+	return nil
+}
+
+func runOCandGetOutput(arg []string) (string, error) {
+	ocPath, err := exec.LookPath("oc")
+	if err != nil {
+		return "", fmt.Errorf("Failed to find oc binary: %v", err)
+	}
+
+	cmd := exec.Command(ocPath, arg...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("Failed to run oc command: %v", err)
+	}
+	return string(out), nil
+}
+
+// createServiceAccount creates a service account
+func (f *Framework) SetupRBACForMetricsTest() error {
+	_, err := runOCandGetOutput([]string{
+		"create", "sa", PromethusTestSA, "-n", f.OperatorNamespace})
+	if err != nil {
+		return fmt.Errorf("Failed to create service account: %v", err)
+	}
+
+	_, err = runOCandGetOutput([]string{
+		"adm", "policy", "add-cluster-role-to-user", "cluster-monitoring-view", "-z", PromethusTestSA, "-n", f.OperatorNamespace})
+	if err != nil {
+		return fmt.Errorf("Failed to add cluster role to user: %v", err)
+	}
+	return nil
+}
+
+// CleanupRBACForMetricsTest deletes the service account
+func (f *Framework) CleanUpRBACForMetricsTest() error {
+	_, err := runOCandGetOutput([]string{
+		"delete", "sa", PromethusTestSA, "-n", f.OperatorNamespace})
+	if err != nil {
+		return fmt.Errorf("Failed to delete service account: %v", err)
+	}
+	return nil
+}
+
+// GetPrometheusMetricTargets retrieves Prometheus metric targets
+func (f *Framework) GetPrometheusMetricTargets() ([]promv1.Target, error) {
+	var metricsTargets []promv1.Target
+	const prometheusCommand = `TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) && { curl -k -s https://prometheus-k8s.openshift-monitoring.svc.cluster.local:9091/api/v1/targets --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt -H "Authorization: Bearer $TOKEN"; }`
+	namespace := f.OperatorNamespace
+	out, err := runOCandGetOutput([]string{
+		"run", "--rm", "-i", "--restart=Never", "--image=registry.fedoraproject.org/fedora:latest",
+		"-n", namespace, "--overrides={\"spec\": {\"serviceAccountName\": \"" + PromethusTestSA + "\"}}", "metrics-test", "--", "bash", "-c", prometheusCommand})
+
+	if err != nil {
+		return metricsTargets, fmt.Errorf("error getting output: %v", err)
+	}
+
+	outTrimmed := trimOutput(string(out))
+	if outTrimmed == "" {
+		return metricsTargets, fmt.Errorf("error getting output")
+	}
+
+	log.Printf("Metrics output:\n%s\n", outTrimmed)
+	var responseData struct {
+		Data struct {
+			ActiveTargets []promv1.Target `json:"activeTargets"`
+		} `json:"data"`
+	}
+	err = json.Unmarshal([]byte(outTrimmed), &responseData)
+	if err != nil {
+		return metricsTargets, fmt.Errorf("error unmarshalling json: %v", err)
+	}
+
+	// Filter metrics for the specified namespace
+	for _, metricsTarget := range responseData.Data.ActiveTargets {
+		// check if there is a metric label first
+		if metricsTarget.Labels != nil {
+			if metricContainsLabel(metricsTarget, "namespace", namespace) {
+				// check if it has endpoint equal to metrics or metrics-co
+				if metricContainsLabel(metricsTarget, "endpoint", "metrics") || metricContainsLabel(metricsTarget, "endpoint", "metrics-co") {
+					metricsTargets = append(metricsTargets, metricsTarget)
+				}
+			}
+		}
+	}
+
+	return metricsTargets, nil
+}
+
+// function to check a label value in a metric match certain value
+func metricContainsLabel(metricTarget promv1.Target, labelName string, labelValue string) bool {
+	if metricTarget.Labels != nil {
+		for _, label := range metricTarget.Labels {
+			if label.Name == labelName && label.Value == labelValue {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func trimOutput(out string) string {
+	startIndex := strings.Index(out, `{"status":"`)
+	if startIndex == -1 {
+		return ""
+	}
+
+	endIndex := strings.LastIndex(out, "}")
+	if endIndex == -1 {
+		return ""
+	}
+
+	return out[startIndex : endIndex+1]
+}
+
+// assertServiceMonitoringMetricsTarget checks if the specified metrics are up
+func (f *Framework) AssertServiceMonitoringMetricsTarget(metrics []promv1.Target, expectedTargetsCount int) error {
+	// make sure we have required metrics
+	if len(metrics) != expectedTargetsCount {
+		return fmt.Errorf("Expected %d metrics, got %d", expectedTargetsCount, len(metrics))
+	}
+
+	for _, metric := range metrics {
+		if metric.Health != "up" {
+			return fmt.Errorf("Metric %s is not up. LastError: %s", metric.Labels, metric.LastError)
+		} else {
+			log.Printf("Metric instance %s is up. LastScrape: %s", metric.Labels, metric.LastScrape)
+		}
 	}
 	return nil
 }

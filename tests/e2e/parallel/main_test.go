@@ -450,6 +450,29 @@ func TestInvalidBundleWithNoTag(t *testing.T) {
 	}
 }
 
+func TestServiceMonitoringMetricsTarget(t *testing.T) {
+	t.Parallel()
+	f := framework.Global
+
+	err := f.SetupRBACForMetricsTest()
+	if err != nil {
+		t.Fatalf("failed to create service account: %s", err)
+	}
+	defer f.CleanUpRBACForMetricsTest()
+
+	metricsTargets, err := f.GetPrometheusMetricTargets()
+	if err != nil {
+		t.Fatalf("failed to get prometheus metric targets: %s", err)
+	}
+
+	expectedMetricsCount := 2
+
+	err = f.AssertServiceMonitoringMetricsTarget(metricsTargets, expectedMetricsCount)
+	if err != nil {
+		t.Fatalf("failed to assert metrics target: %s", err)
+	}
+}
+
 func TestParsingErrorRestartsParserInitContainer(t *testing.T) {
 	t.Parallel()
 	f := framework.Global

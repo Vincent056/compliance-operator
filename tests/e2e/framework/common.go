@@ -427,6 +427,7 @@ func (f *Framework) ensureTestNamespaceExists() error {
 				Labels: map[string]string{
 					psapi.EnforceLevelLabel:                          string(psapi.LevelPrivileged),
 					"security.openshift.io/scc.podSecurityLabelSync": "false",
+					"openshift.io/cluster-monitoring":                "true",
 				},
 			},
 		}

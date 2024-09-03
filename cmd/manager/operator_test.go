@@ -24,7 +24,7 @@ var _ = Describe("Operator Startup Function tests", func() {
 		When("Installing to non-controlled namespace", func() {
 			It("ServiceMonitor is generated with the proper TLSConfig ServerName", func() {
 				metricService := operatorMetricService("foobar")
-				sm := generateOperatorServiceMonitor(metricService, "foobar", "secret")
+				sm := generateOperatorServiceMonitor(metricService, "foobar")
 				controllerMetricServiceFound := false
 				for _, ep := range sm.Spec.Endpoints {
 					if ep.Port == metrics.ControllerMetricsServiceName && ep.TLSConfig != nil {

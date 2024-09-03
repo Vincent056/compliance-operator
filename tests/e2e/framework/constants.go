@@ -16,4 +16,5 @@ const (
 	RhcosContentFile              = "ssg-rhcos4-ds.xml"
 	OcpContentFile                = "ssg-ocp4-ds.xml"
 	UnexistentResourceContentFile = "ocp4-unexistent-resource.xml"
+	PromethusTestSA               = "prometheus-query-sa"
 )
