@@ -27,6 +27,19 @@ const (
 	CheckTypeNone     = ""
 )
 
+// ScannerTypeEnum is an enum type for the scanner type
+type ScannerTypeEnum string
+
+const (
+	// ScannerTypeOpenSCAP is the default scanner type
+	ScannerTypeOpenSCAP ScannerTypeEnum = "openscap"
+	// ScannerTypeCelScanner is the scanner type for the CEL scanner
+	ScannerTypeCelScanner ScannerTypeEnum = "cel"
+	// ScannerTypeUnknown is the scanner type for an unknown scanner
+	ScannerTypeUnknown ScannerTypeEnum = "unknown"
+)
+
+// RulePayload defines the structure for rule evaluation
 type RulePayload struct {
 	// The XCCDF ID
 	ID string `json:"id"`
@@ -50,6 +63,61 @@ type RulePayload struct {
 	// +optional
 	// +listType=atomic
 	AvailableFixes []FixDefinition `json:"availableFixes,omitempty"`
+	// ScannerType is the type of scanner that should be used to evaluate this rule
+	// Defaults to openscap
+	// +kubebuilder:default=openscap
+	ScannerType ScannerTypeEnum `json:"scannerType,omitempty"`
+	// Expression is the expression that will be evaluated by the scanner
+	// This is used by the CEL scanner
+	Expression string `json:"expression,omitempty"`
+	// Inputs represent the input parameters for the CEL expression
+	// +nullable
+	// +optional
+	// +listType=atomic
+	Inputs []InputParameter `json:"inputs,omitempty"`
+	// ErrorMessage is the error message that will be displayed if the rule fails
+	ErrorMessage string `json:"errorMessage,omitempty"`
+}
+
+// InputParameter defines the structure for the inputs used in the CEL expression
+type InputParameter struct {
+	// The name of the input parameter
+	Name string `json:"name"`
+	// The type of the input parameter
+	Type string `json:"type"`
+	// The API group of the resource
+	APIGroup string `json:"apiGroup"`
+	// The version of the resource
+	Version string `json:"version"`
+	// The resource type
+	Resource string `json:"resource"`
+	// The namespace of the resource
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type RuleResult struct {
+	// The XCCDF ID
+	ID string `json:"id"`
+	// The title of the Rule
+	Title string `json:"title"`
+	// The description of the Rule
+	Description string `json:"description"`
+	// The rationale of the Rule
+	Rationale string `json:"rationale"`
+	// The severity level
+	Severity ComplianceCheckResultSeverity `json:"severity"`
+	// The result of the rule evaluation
+	Status ComplianceCheckStatus `json:"status"`
+	// The message of the rule evaluation
+	Instructions string `json:"instructions"`
+	// Any warnings that the user should be aware about.
+	// +nullable
+	Warnings []string `json:"warnings,omitempty"`
+	// It stores a list of values used by the check
+	ValuesUsed []string `json:"valuesUsed,omitempty"`
+	// The message of the rule evaluation
+	Message string `json:"message"`
 }
 
 // +kubebuilder:object:root=true

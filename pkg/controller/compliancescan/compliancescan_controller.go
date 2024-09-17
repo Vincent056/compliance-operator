@@ -51,6 +51,8 @@ const (
 const (
 	// OpenSCAPScanContainerName defines the name of the contianer that will run OpenSCAP
 	OpenSCAPScanContainerName = "scanner"
+	// CELScannerContainerName defines the name of the container that will run CEL
+	CELScannerContainerName = "scanner"
 	// The default time we should wait before requeuing
 	requeueAfterDefault = 10 * time.Second
 )
@@ -223,9 +225,10 @@ func (r *ReconcileComplianceScan) validate(instance *compv1alpha1.ComplianceScan
 	}
 
 	// Set default scan type if missing
-	if instance.Spec.ScanType == "" {
+	if instance.Spec.ScanType == "" || instance.Spec.ScannerType == "" {
 		instanceCopy := instance.DeepCopy()
 		instanceCopy.Spec.ScanType = compv1alpha1.ScanTypeNode
+		instanceCopy.Spec.ScannerType = compv1alpha1.ScannerTypeOpenSCAP
 		err := r.Client.Update(context.TODO(), instanceCopy)
 		return false, err
 	}

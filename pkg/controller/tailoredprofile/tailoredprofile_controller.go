@@ -10,11 +10,10 @@ import (
 	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/metrics"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
 
+	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/common"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/xccdf"
 	"github.com/go-logr/logr"
-
-	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,6 +108,9 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 		return reconcile.Result{}, err
 	}
 
+	// Check if the TailoredProfile has the custom profile annotation
+	isCustomProfile := utils.IsCustomTailoredProfile(instance)
+
 	var pb *cmpv1alpha1.ProfileBundle
 	var p *cmpv1alpha1.Profile
 
@@ -123,17 +125,7 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 			return reconcile.Result{}, pbgetErr
 		}
 
-		needsAnnotation := false
-
-		if instance.GetAnnotations() == nil {
-			needsAnnotation = true
-		} else {
-			if _, ok := instance.GetAnnotations()[cmpv1alpha1.ProductTypeAnnotation]; !ok {
-				needsAnnotation = true
-			}
-		}
-
-		if needsAnnotation {
+		if needsAnnotation(instance) {
 			tpCopy := instance.DeepCopy()
 			anns := tpCopy.GetAnnotations()
 			if anns == nil {
@@ -142,6 +134,10 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 
 			scanType := utils.GetScanType(p.GetAnnotations())
 			anns[cmpv1alpha1.ProductTypeAnnotation] = string(scanType)
+
+			if _, exists := anns[cmpv1alpha1.ScannerTypeAnnotation]; !exists {
+				anns[cmpv1alpha1.ScannerTypeAnnotation] = string(cmpv1alpha1.ScannerTypeOpenSCAP)
+			}
 			tpCopy.SetAnnotations(anns)
 
 			// Set labels for the TailoredProfile
@@ -150,13 +146,11 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 				labels = make(map[string]string)
 			}
 			labels[cmpv1alpha1.ProfileGuidLabel] = xccdf.GetProfileUniqueIDFromTP(xccdf.GetXCCDFProfileID(instance))
-
 			labels[cmpv1alpha1.ExtendedProfileGuidLabel] = p.GetLabels()[cmpv1alpha1.ProfileGuidLabel]
 			tpCopy.SetLabels(labels)
-			// Make TailoredProfile be owned by the Profile it extends. This way
-			// we can ensure garbage collection happens.
-			// This update will trigger a requeue with the new object.
-			if needsControllerRef(tpCopy) {
+
+			// Make TailoredProfile be owned by the Profile it extends if it's not a custom profile
+			if !isCustomProfile && needsControllerRef(tpCopy) {
 				return r.setOwnership(tpCopy, p)
 			} else {
 				r.Client.Update(context.TODO(), tpCopy)
@@ -164,7 +158,7 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 			}
 		}
 
-		if needsControllerRef(instance) {
+		if !isCustomProfile && needsControllerRef(instance) {
 			tpCopy := instance.DeepCopy()
 			return r.setOwnership(tpCopy, p)
 		}
@@ -189,29 +183,39 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 			return reconcile.Result{}, pbgetErr
 		}
 
-		// Make TailoredProfile be owned by the ProfileBundle. This way
-		// we can ensure garbage collection happens.
-		// This update will trigger a requeue with the new object.
-		if needsControllerRef(instance) {
+		if needsAnnotation(instance) {
 			tpCopy := instance.DeepCopy()
 			anns := tpCopy.GetAnnotations()
 			if anns == nil {
 				anns = make(map[string]string)
 			}
-			// If the user already provided the product type, we
-			// don't need to set it
-			_, ok := anns[cmpv1alpha1.ProductTypeAnnotation]
-			if !ok {
+
+			// Set ProductTypeAnnotation if not already provided
+			if _, exists := anns[cmpv1alpha1.ProductTypeAnnotation]; !exists {
+				productType := cmpv1alpha1.ScanTypePlatform // Default to platform scan type
 				if strings.HasSuffix(tpCopy.GetName(), "-node") {
-					anns[cmpv1alpha1.ProductTypeAnnotation] = string(cmpv1alpha1.ScanTypeNode)
-				} else {
-					anns[cmpv1alpha1.ProductTypeAnnotation] = string(cmpv1alpha1.ScanTypePlatform)
+					productType = cmpv1alpha1.ScanTypeNode
 				}
-				tpCopy.SetAnnotations(anns)
+				anns[cmpv1alpha1.ProductTypeAnnotation] = string(productType)
 			}
-			// This will trigger an update anyway
-			return r.setOwnership(tpCopy, pb)
+
+			// Set ScannerTypeAnnotation if not already provided
+			if _, exists := anns[cmpv1alpha1.ScannerTypeAnnotation]; !exists {
+				anns[cmpv1alpha1.ScannerTypeAnnotation] = string(cmpv1alpha1.ScannerTypeOpenSCAP)
+			}
+
+			// Update annotations if any were modified
+			tpCopy.SetAnnotations(anns)
+			// Make TailoredProfile be owned by the ProfileBundle if it's not a custom profile
+			if !isCustomProfile && needsControllerRef(instance) {
+				// Set ownership and return
+				return r.setOwnership(tpCopy, pb)
+			} else {
+				r.Client.Update(context.TODO(), tpCopy)
+				return reconcile.Result{}, nil
+			}
 		}
+
 	}
 
 	ann := instance.GetAnnotations()
@@ -269,15 +273,78 @@ func (r *ReconcileTailoredProfile) Reconcile(ctx context.Context, request reconc
 		return reconcile.Result{}, varErr
 	}
 
-	// Get tailored profile config map
-	tpcm := newTailoredProfileCM(instance)
+	return r.handleTailoredConfigMap(instance, p, pb, rules, variables, reqLogger)
 
-	tpcm.Data[tailoringFile], err = xccdf.TailoredProfileToXML(instance, p, pb, rules, variables)
-	if err != nil {
+}
+
+// needsAnnotation checks if the TailoredProfile needs annotations
+func needsAnnotation(tp *cmpv1alpha1.TailoredProfile) bool {
+	if tp.GetAnnotations() == nil {
+		return true
+	}
+	if _, ok := tp.GetAnnotations()[cmpv1alpha1.ProductTypeAnnotation]; !ok {
+		return true
+	}
+	if _, ok := tp.GetAnnotations()[cmpv1alpha1.ScannerTypeAnnotation]; !ok {
+		return true
+	}
+	return false
+}
+
+// GenerateConfigMap generates a ConfigMap for the TailoredProfile
+func (r *ReconcileTailoredProfile) handleTailoredConfigMap(instance *cmpv1alpha1.TailoredProfile, p *cmpv1alpha1.Profile, pb *cmpv1alpha1.ProfileBundle, rules map[string]*cmpv1alpha1.Rule, variables []*cmpv1alpha1.Variable, reqLogger logr.Logger) (reconcile.Result, error) {
+	ann := instance.GetAnnotations()
+	scanType := GetScannerType(ann)
+	err := error(nil)
+	switch scanType {
+	case cmpv1alpha1.ScannerTypeOpenSCAP:
+		reqLogger.Info("ScannerType is OpenSCAP")
+		if utils.IsCustomTailoredProfile(instance) {
+			// We should fail the TailoredProfile if it is a custom profile
+			// and the ScannerType is OpenSCAP
+			err = r.handleTailoredProfileStatusError(instance, fmt.Errorf("Custom TailoredProfile cannot have ScannerType OpenSCAP"))
+			return reconcile.Result{}, err
+		}
+
+		// Create a new config map for the tailored profile
+		tpcm := newTailoredProfileCM(instance)
+
+		// Convert the tailored profile to XML and store it in the config map
+		tpcm.Data[tailoringFile], err = xccdf.TailoredProfileToXML(instance, p, pb, rules, variables)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+
+		// Ensure the output object is created or updated
+		return r.ensureOutputObject(instance, tpcm, reqLogger)
+
+	case cmpv1alpha1.ScannerTypeCelScanner:
+		reqLogger.Info("ScannerType is CEL")
+		// Create a new config map for the tailored profile
+		tpcm := newTailoredProfileCM(instance)
+		// TODO: Do we still need this config map?
+		// Ensure the output object is created or updated
+		tpcm.Data[tailoringFile] = "CEL"
+		return r.ensureOutputObject(instance, tpcm, reqLogger)
+	case cmpv1alpha1.ScannerTypeUnknown:
+		fallthrough
+
+	default:
+		reqLogger.Info("ScannerType is unknown, failing the TailoredProfile")
+		err = r.handleTailoredProfileStatusError(instance, fmt.Errorf("ScannerType is unknown"))
 		return reconcile.Result{}, err
 	}
+}
 
-	return r.ensureOutputObject(instance, tpcm, reqLogger)
+// GetScannerType check the tailored profile annotations and return the scanner type
+func GetScannerType(anns map[string]string) cmpv1alpha1.ScannerTypeEnum {
+	if anns == nil {
+		return cmpv1alpha1.ScannerTypeUnknown
+	}
+	if v, ok := anns[cmpv1alpha1.ScannerTypeAnnotation]; ok {
+		return cmpv1alpha1.ScannerTypeEnum(v)
+	}
+	return cmpv1alpha1.ScannerTypeUnknown
 }
 
 // generateWarningMessage generates a warning message for the user
@@ -461,7 +528,7 @@ func (r *ReconcileTailoredProfile) getProfileBundleFromRulesOrVars(tp *cmpv1alph
 		ruleToBeChecked = rule
 		break
 	}
-	if ruleToBeChecked != nil {
+	if ruleToBeChecked != nil && !utils.IsCustomTailoredProfile(tp) {
 		pb, err := r.getProfileBundleFrom("Rule", ruleToBeChecked)
 		if err != nil {
 			return nil, err
@@ -487,7 +554,7 @@ func (r *ReconcileTailoredProfile) getProfileBundleFromRulesOrVars(tp *cmpv1alph
 		break
 	}
 
-	if varToBeChecked != nil {
+	if varToBeChecked != nil && !utils.IsCustomTailoredProfile(tp) {
 		pb, err := r.getProfileBundleFrom("Variable", varToBeChecked)
 		if err != nil {
 			return nil, err
@@ -496,7 +563,12 @@ func (r *ReconcileTailoredProfile) getProfileBundleFromRulesOrVars(tp *cmpv1alph
 		return pb, nil
 	}
 
-	return nil, common.NewNonRetriableCtrlError("Unable to get ProfileBundle from selected rules and variables")
+	if !utils.IsCustomTailoredProfile(tp) {
+		return nil, common.NewNonRetriableCtrlError("Unable to get ProfileBundle from selected rules and variables")
+	} else {
+		return nil, nil
+	}
+
 }
 
 func (r *ReconcileTailoredProfile) getRulesFromSelections(tp *cmpv1alpha1.TailoredProfile, pb *cmpv1alpha1.ProfileBundle) (map[string]*cmpv1alpha1.Rule, error) {
@@ -516,11 +588,12 @@ func (r *ReconcileTailoredProfile) getRulesFromSelections(tp *cmpv1alpha1.Tailor
 			}
 			return nil, err
 		}
-
-		// All variables should be part of the same ProfileBundle
-		if !isOwnedBy(rule, pb) {
-			return nil, common.NewNonRetriableCtrlError("rule %s not owned by expected ProfileBundle %s",
-				rule.GetName(), pb.GetName())
+		if !utils.IsCustomTailoredProfile(tp) {
+			// All rules should be part of the same ProfileBundle
+			if !isOwnedBy(rule, pb) {
+				return nil, common.NewNonRetriableCtrlError("rule %s not owned by expected ProfileBundle %s",
+					rule.GetName(), pb.GetName())
+			}
 		}
 
 		rules[selection.Name] = rule
@@ -540,11 +613,12 @@ func (r *ReconcileTailoredProfile) getVariablesFromSelections(tp *cmpv1alpha1.Ta
 			}
 			return nil, err
 		}
-
-		// All variables should be part of the same ProfileBundle
-		if !isOwnedBy(variable, pb) {
-			return nil, common.NewNonRetriableCtrlError("variable %s not owned by expected ProfileBundle %s",
-				variable.GetName(), pb.GetName())
+		if !utils.IsCustomTailoredProfile(tp) {
+			// All variables should be part of the same ProfileBundle
+			if !isOwnedBy(variable, pb) {
+				return nil, common.NewNonRetriableCtrlError("variable %s not owned by expected ProfileBundle %s",
+					variable.GetName(), pb.GetName())
+			}
 		}
 
 		// try setting the variable, this also validates the value

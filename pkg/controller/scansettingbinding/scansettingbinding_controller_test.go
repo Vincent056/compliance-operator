@@ -70,6 +70,7 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 
 		platformProfileAnnotations := map[string]string{
 			compv1alpha1.ProductTypeAnnotation: string(compv1alpha1.ScanTypeNode),
+			compv1alpha1.ScannerTypeAnnotation: string(compv1alpha1.ScannerTypeOpenSCAP),
 			compv1alpha1.ProductAnnotation:     "rhcos4",
 		}
 
@@ -336,6 +337,7 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 			expScanWorker := compv1alpha1.ComplianceScanSpecWrapper{
 				ComplianceScanSpec: compv1alpha1.ComplianceScanSpec{
 					ScanType:           compv1alpha1.ScanTypeNode,
+					ScannerType:        compv1alpha1.ScannerTypeOpenSCAP,
 					ContentImage:       pBundleRhcos.Spec.ContentImage,
 					Profile:            profRhcosE8.ID,
 					Rule:               "",
@@ -350,7 +352,9 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 			}
 			expScanMaster := compv1alpha1.ComplianceScanSpecWrapper{
 				ComplianceScanSpec: compv1alpha1.ComplianceScanSpec{
-					ScanType:           compv1alpha1.ScanTypeNode,
+					ScanType:    compv1alpha1.ScanTypeNode,
+					ScannerType: compv1alpha1.ScannerTypeOpenSCAP,
+
 					ContentImage:       pBundleRhcos.Spec.ContentImage,
 					Profile:            profRhcosE8.ID,
 					Rule:               "",
@@ -433,7 +437,9 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 
 			expScanMaster := compv1alpha1.ComplianceScanSpecWrapper{
 				ComplianceScanSpec: compv1alpha1.ComplianceScanSpec{
-					ScanType:     compv1alpha1.ScanTypeNode,
+					ScanType:    compv1alpha1.ScanTypeNode,
+					ScannerType: compv1alpha1.ScannerTypeOpenSCAP,
+
 					ContentImage: pBundleRhcos.Spec.ContentImage,
 					Profile:      tpRhcosE8.Status.ID,
 					Rule:         "",
@@ -451,6 +457,7 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 			expScanWorker := compv1alpha1.ComplianceScanSpecWrapper{
 				ComplianceScanSpec: compv1alpha1.ComplianceScanSpec{
 					ScanType:     compv1alpha1.ScanTypeNode,
+					ScannerType:  compv1alpha1.ScannerTypeOpenSCAP,
 					ContentImage: pBundleRhcos.Spec.ContentImage,
 					Profile:      tpRhcosE8.Status.ID,
 					Rule:         "",
@@ -535,7 +542,9 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 
 			expScanMaster := compv1alpha1.ComplianceScanSpecWrapper{
 				ComplianceScanSpec: compv1alpha1.ComplianceScanSpec{
-					ScanType:     compv1alpha1.ScanTypeNode,
+					ScanType:    compv1alpha1.ScanTypeNode,
+					ScannerType: compv1alpha1.ScannerTypeOpenSCAP,
+
 					ContentImage: pBundleRhcos.Spec.ContentImage,
 					Profile:      scratchTP.Status.ID,
 					Rule:         "",
@@ -552,7 +561,9 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 			}
 			expScanWorker := compv1alpha1.ComplianceScanSpecWrapper{
 				ComplianceScanSpec: compv1alpha1.ComplianceScanSpec{
-					ScanType:     compv1alpha1.ScanTypeNode,
+					ScanType:    compv1alpha1.ScanTypeNode,
+					ScannerType: compv1alpha1.ScannerTypeOpenSCAP,
+
 					ContentImage: pBundleRhcos.Spec.ContentImage,
 					Profile:      scratchTP.Status.ID,
 					Rule:         "",
@@ -734,7 +745,9 @@ var _ = Describe("Testing scansettingbinding controller", func() {
 		JustBeforeEach(func() {
 			platformBadProfileAnnotations := map[string]string{
 				compv1alpha1.ProductTypeAnnotation: string(compv1alpha1.ScanTypeNode),
-				compv1alpha1.ProductAnnotation:     "somethingelse",
+				compv1alpha1.ScannerTypeAnnotation: string(compv1alpha1.ScannerTypeOpenSCAP),
+
+				compv1alpha1.ProductAnnotation: "somethingelse",
 			}
 
 			profRhcosE8Badproduct := profRhcosE8.DeepCopy()

@@ -10,6 +10,30 @@ metadata:
   name: api-resource-collector
 rules:
   - apiGroups:
+      - compliance.openshift.io
+    resources:
+      - tailoredprofiles
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - compliance.openshift.io
+    resources:
+      - variables
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - compliance.openshift.io
+    resources:
+      - rules
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
       - operator.openshift.io
     resources:
       - ingresscontrollers
@@ -400,7 +424,7 @@ rules:
       - create
       - get
   - nonResourceURLs:
-      - '*'
+      - "*"
     verbs:
       - get
   - apiGroups:

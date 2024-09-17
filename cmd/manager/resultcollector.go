@@ -79,6 +79,7 @@ type scapresultsConfig struct {
 	Key                    string
 	CA                     string
 	DisableRawResultUpload bool
+	ScannerType            string
 }
 
 func defineResultcollectorFlags(cmd *cobra.Command) {
@@ -97,6 +98,7 @@ func defineResultcollectorFlags(cmd *cobra.Command) {
 	cmd.Flags().String("tls-client-key", "", "The path to the client PEM key.")
 	cmd.Flags().String("tls-ca", "", "The path to the CA certificate.")
 	cmd.Flags().Bool("disable-raw-upload", false, "Setting to true to disable upload raw arf result")
+	cmd.Flags().String("scanner-type", "openscap", "The scanner type to use. e.g. openscap or cel.")
 	flags := cmd.Flags()
 
 	// Add flags registered by imported packages (e.g. glog and
@@ -119,6 +121,7 @@ func parseConfig(cmd *cobra.Command) *scapresultsConfig {
 	conf.Timeout, _ = cmd.Flags().GetInt64("timeout")
 	conf.ResultServerURI, _ = cmd.Flags().GetString("resultserveruri")
 	conf.DisableRawResultUpload, _ = cmd.Flags().GetBool("disable-raw-upload")
+	conf.ScannerType, _ = cmd.Flags().GetString("scanner-type")
 	// Set default if needed
 	if conf.ResultServerURI == "" {
 		conf.ResultServerURI = "http://" + conf.ScanName + "-rs:8080/"
@@ -341,6 +344,7 @@ func uploadResultConfigMap(xccdfContents *resultFileContents, exitcode string,
 		}
 		confMap := utils.GetResultConfigMap(openscapScan, scapresultsconf.ConfigMapName, "results",
 			scapresultsconf.NodeName, xccdfContents.contents, xccdfContents.compressed, exitcode, warnings)
+		confMap.Annotations[compv1alpha1.ScannerTypeAnnotation] = scapresultsconf.ScannerType
 		err = client.client.Create(context.TODO(), confMap)
 
 		if errors.IsAlreadyExists(err) {
@@ -362,6 +366,8 @@ func uploadErrorConfigMap(errorMsg *resultFileContents, exitcode string,
 		}
 		confMap := utils.GetResultConfigMap(openscapScan, scapresultsconf.ConfigMapName, "error-msg",
 			scapresultsconf.NodeName, errorMsg.contents, errorMsg.compressed, exitcode, warnings)
+		confMap.Annotations[compv1alpha1.ScannerTypeAnnotation] = scapresultsconf.ScannerType
+
 		err = client.client.Create(context.TODO(), confMap)
 
 		if errors.IsAlreadyExists(err) {

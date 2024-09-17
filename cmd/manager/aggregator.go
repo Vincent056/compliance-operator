@@ -79,9 +79,10 @@ func init() {
 }
 
 type aggregatorConfig struct {
-	Content   string
-	ScanName  string
-	Namespace string
+	Content     string
+	ScanName    string
+	Namespace   string
+	ScannerType string
 }
 
 type aggregatorCrClient interface {
@@ -113,6 +114,7 @@ func defineAggregatorFlags(cmd *cobra.Command) {
 	cmd.Flags().String("content", "", "The path to the OpenScap content")
 	cmd.Flags().String("scan", "", "The compliance scan that owns the configMap objects.")
 	cmd.Flags().String("namespace", "openshift-compliance", "Running pod namespace.")
+	cmd.Flags().String("scanner-type", "openscap", "The scanner type used to scan the content. Supported values are 'openscap' and 'cel'")
 
 	flags := cmd.Flags()
 
@@ -126,7 +128,7 @@ func parseAggregatorConfig(cmd *cobra.Command) *aggregatorConfig {
 	conf.Content = getValidStringArg(cmd, "content")
 	conf.ScanName = getValidStringArg(cmd, "scan")
 	conf.Namespace = getValidStringArg(cmd, "namespace")
-
+	conf.ScannerType = getValidStringArg(cmd, "scanner-type")
 	logf.SetLogger(zap.New())
 
 	return &conf
@@ -223,8 +225,20 @@ func parseResultRemediations(client runtimeclient.Client, scheme *runtime.Scheme
 		manualRules = xccdf.GetManualRules(tp)
 	}
 
-	table, err := utils.ParseResultsFromContentAndXccdf(scheme, scanName, namespace, content, scanReader, manualRules)
-	return table, nodeName, nil
+	// check scanner type is openscap or cel
+	scannerType := cm.Annotations[compv1alpha1.ScannerTypeAnnotation]
+
+	var table []*utils.ParseResult
+	err = nil
+	if scannerType == string(compv1alpha1.ScannerTypeOpenSCAP) {
+		table, err = utils.ParseResultsFromContentAndXccdf(scheme, scanName, namespace, content, scanReader, manualRules)
+	} else if scannerType == string(compv1alpha1.ScannerTypeCelScanner) {
+		table, err = utils.ParseCelResultFromContent(scheme, scanName, namespace, scanReader, manualRules)
+	} else {
+		err = fmt.Errorf("scanner type %s is not supported", scannerType)
+	}
+
+	return table, nodeName, err
 }
 
 func getScanResult(cm *v1.ConfigMap) (compv1alpha1.ComplianceScanStatusResult, string) {
@@ -850,18 +864,21 @@ func aggregator(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	contentFile, err := readContent(aggregatorConf.Content)
-	if err != nil {
-		cmdLog.Error(err, "Cannot read the content")
-		os.Exit(1)
-	}
-	// #nosec
-	defer contentFile.Close()
-	bufContentFile := bufio.NewReader(contentFile)
-	contentDom, err := utils.ParseContent(bufContentFile)
-	if err != nil {
-		cmdLog.Error(err, "Cannot parse the content")
-		os.Exit(1)
+	var contentDom *xmlquery.Node
+	if aggregatorConf.ScannerType == string(compv1alpha1.ScannerTypeOpenSCAP) {
+		contentFile, err := readContent(aggregatorConf.Content)
+		if err != nil {
+			cmdLog.Error(err, "Cannot read the content")
+			os.Exit(1)
+		}
+		// #nosec
+		defer contentFile.Close()
+		bufContentFile := bufio.NewReader(contentFile)
+		contentDom, err = utils.ParseContent(bufContentFile)
+		if err != nil {
+			cmdLog.Error(err, "Cannot parse the content")
+			os.Exit(1)
+		}
 	}
 
 	prCtx := utils.NewParseResultContext()

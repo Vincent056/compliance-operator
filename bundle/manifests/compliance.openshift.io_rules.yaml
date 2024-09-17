@@ -58,9 +58,52 @@ spec:
           description:
             description: The description of the Rule
             type: string
+          errorMessage:
+            description: ErrorMessage is the error message that will be displayed
+              if the rule fails
+            type: string
+          expression:
+            description: |-
+              Expression is the expression that will be evaluated by the scanner
+              This is used by the CEL scanner
+            type: string
           id:
             description: The XCCDF ID
             type: string
+          inputs:
+            description: Inputs represent the input parameters for the CEL expression
+            items:
+              description: InputParameter defines the structure for the inputs used
+                in the CEL expression
+              properties:
+                apiGroup:
+                  description: The API group of the resource
+                  type: string
+                name:
+                  description: The name of the input parameter
+                  type: string
+                namespace:
+                  description: The namespace of the resource
+                  type: string
+                resource:
+                  description: The resource type
+                  type: string
+                type:
+                  description: The type of the input parameter
+                  type: string
+                version:
+                  description: The version of the resource
+                  type: string
+              required:
+              - apiGroup
+              - name
+              - resource
+              - type
+              - version
+              type: object
+            nullable: true
+            type: array
+            x-kubernetes-list-type: atomic
           instructions:
             description: Instructions for auditing this specific rule
             type: string
@@ -76,6 +119,12 @@ spec:
             type: object
           rationale:
             description: The rationale of the Rule
+            type: string
+          scannerType:
+            default: openscap
+            description: |-
+              ScannerType is the type of scanner that should be used to evaluate this rule
+              Defaults to openscap
             type: string
           severity:
             description: The severity level

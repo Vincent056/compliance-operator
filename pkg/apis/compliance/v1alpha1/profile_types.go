@@ -8,6 +8,12 @@ import (
 // this Profile or a TailoredProfile targets
 const ProductTypeAnnotation = "compliance.openshift.io/product-type"
 
+// ScannerTypeAnnotation specifies the type of scanner to use for this Profile
+const ScannerTypeAnnotation = "compliance.openshift.io/scanner-type"
+
+// CustomProfileAnnotation define if tailored profile contains custom rules that is not part of the profile
+const CustomProfileAnnotation = "compliance.openshift.io/custom-profile"
+
 // ProductAnnotation specifies the name of the platform this Profile
 // or TailoredProfile is targetting. Example: ocp4, rhcos4, ...
 const ProductAnnotation = "compliance.openshift.io/product"

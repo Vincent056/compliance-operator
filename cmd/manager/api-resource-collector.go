@@ -63,6 +63,7 @@ type fetcherConfig struct {
 	Profile            string
 	ExitCodeFile       string
 	WarningsOutputFile string
+	ScannerType        string
 }
 
 func defineAPIResourceCollectorFlags(cmd *cobra.Command) {
@@ -73,6 +74,7 @@ func defineAPIResourceCollectorFlags(cmd *cobra.Command) {
 	cmd.Flags().String("warnings-output-file", "", "A file containing the warnings output.")
 	cmd.Flags().Bool("debug", false, "Print debug messages.")
 	cmd.Flags().String("platform", "", "The platform flag used by CPE detection.")
+	cmd.Flags().String("scanner", "", "The scanner flag defining the scanner type, e.g. openscap or cel.")
 
 	flags := cmd.Flags()
 
@@ -89,6 +91,7 @@ func parseAPIResourceCollectorConfig(cmd *cobra.Command) *fetcherConfig {
 	conf.WarningsOutputFile = getValidStringArg(cmd, "warnings-output-file")
 	debugLog, _ = cmd.Flags().GetBool("debug")
 	conf.Tailoring, _ = cmd.Flags().GetString("tailoring")
+	conf.ScannerType = getValidStringArg(cmd, "scanner")
 	return &conf
 }
 
@@ -125,28 +128,52 @@ func runAPIResourceCollector(cmd *cobra.Command, args []string) {
 		FATAL("Error building kubeClientSet: %v", err)
 	}
 
-	fetcher := NewDataStreamResourceFetcher(scheme, client, kubeClientSet)
+	if fetcherConf.ScannerType == "" || fetcherConf.ScannerType == "openscap" {
+		fetcher := NewDataStreamResourceFetcher(scheme, client, kubeClientSet)
 
-	if err := fetcher.LoadSource(fetcherConf.Content); err != nil {
-		FATAL("Error loading source data: %v", err)
-	}
-	if fetcherConf.Tailoring != "" {
-		if err := fetcher.LoadTailoring(fetcherConf.Tailoring); err != nil {
-			FATAL("Error loading tailoring data: %v", err)
+		if err := fetcher.LoadSource(fetcherConf.Content); err != nil {
+			FATAL("Error loading source data: %v", err)
 		}
-	}
-	if err := fetcher.FigureResources(fetcherConf.Profile); err != nil {
-		FATAL("Error finding resources: %v", err)
-	}
-	warnings, err := fetcher.FetchResources()
-	if warnErr := fetcher.SaveWarningsIfAny(warnings, fetcherConf.WarningsOutputFile); warnErr != nil {
-		FATAL("Error writing warnings output file: %v", warnErr)
-	}
-	if err != nil {
-		FATAL("Error fetching resources: %v", err)
+		if fetcherConf.Tailoring != "" {
+			if err := fetcher.LoadTailoring(fetcherConf.Tailoring); err != nil {
+				FATAL("Error loading tailoring data: %v", err)
+			}
+		}
+		if err := fetcher.FigureResources(fetcherConf.Profile); err != nil {
+			FATAL("Error finding resources: %v", err)
+		}
+		warnings, err := fetcher.FetchResources()
+		if warnErr := fetcher.SaveWarningsIfAny(warnings, fetcherConf.WarningsOutputFile); warnErr != nil {
+			FATAL("Error writing warnings output file: %v", warnErr)
+		}
+		if err != nil {
+			FATAL("Error fetching resources: %v", err)
+		}
+
+		if err := fetcher.SaveResources(fetcherConf.ResultDir); err != nil {
+			FATAL("Error saving resources: %v", err)
+		}
+	} else {
+		fetcher := NewCELDataStreamResourceFetcher(scheme, client, kubeClientSet)
+		if fetcherConf.Tailoring != "" {
+			if err := fetcher.LoadTailoring(fetcherConf.Profile); err != nil {
+				FATAL("Error loading tailoring data: %v", err)
+			}
+		}
+		if err := fetcher.FigureResources(fetcherConf.Profile); err != nil {
+			FATAL("Error finding resources: %v", err)
+		}
+		warnings, err := fetcher.FetchResources()
+		if err != nil {
+			FATAL("Error fetching resources: %v", err)
+		}
+		if warnErr := fetcher.SaveWarningsIfAny(warnings, fetcherConf.WarningsOutputFile); warnErr != nil {
+			FATAL("Error writing warnings output file: %v", warnErr)
+		}
+		if err := fetcher.SaveResources(fetcherConf.ResultDir); err != nil {
+			FATAL("Error saving resources: %v", err)
+		}
+
 	}
 
-	if err := fetcher.SaveResources(fetcherConf.ResultDir); err != nil {
-		FATAL("Error saving resources: %v", err)
-	}
 }

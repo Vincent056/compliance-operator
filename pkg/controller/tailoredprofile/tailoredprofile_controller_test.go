@@ -73,7 +73,7 @@ var _ = Describe("TailoredprofileController", func() {
 
 		objs := []runtime.Object{pb1.DeepCopy(), pb2.DeepCopy(), p.DeepCopy()}
 
-		for i := 1; i < 10; i++ {
+		for i := 1; i < 15; i++ {
 			r := &compv1alpha1.Rule{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      fmt.Sprintf("rule-%d", i),
@@ -99,7 +99,7 @@ var _ = Describe("TailoredprofileController", func() {
 				Expect(crefErr).To(BeNil())
 				crefErr = controllerutil.SetControllerReference(pb1, v, cscheme)
 				Expect(crefErr).To(BeNil())
-			} else {
+			} else if i < 10 {
 				crefErr := controllerutil.SetControllerReference(pb2, r, cscheme)
 				Expect(crefErr).To(BeNil())
 				crefErr = controllerutil.SetControllerReference(pb2, v, cscheme)
@@ -111,6 +111,17 @@ var _ = Describe("TailoredprofileController", func() {
 				} else {
 					r.CheckType = compv1alpha1.CheckTypeNode
 				}
+			} else {
+				if i < 7 {
+					r.CheckType = compv1alpha1.CheckTypePlatform
+				} else if i == 7 {
+					r.CheckType = compv1alpha1.CheckTypeNone
+				} else {
+					r.CheckType = compv1alpha1.CheckTypeNode
+				}
+				// Set scannerType to cel
+				r.ScannerType = compv1alpha1.ScannerTypeCelScanner
+
 			}
 			objs = append(objs, r.DeepCopy(), v.DeepCopy())
 		}
@@ -1250,4 +1261,85 @@ var _ = Describe("TailoredprofileController", func() {
 			})
 		})
 	})
+	// new test for CEL rules
+	When("Creating a custom TailoredProfile from scratch with CEL rules", func() {
+		var tpName = "tailoring"
+		Context("with all well-formed values", func() {
+			BeforeEach(func() {
+				tp := &compv1alpha1.TailoredProfile{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tpName,
+						Namespace: namespace,
+						Annotations: map[string]string{
+							cmpv1alpha1.CustomProfileAnnotation: "true",
+							cmpv1alpha1.ScannerTypeAnnotation:   string(compv1alpha1.ScannerTypeCelScanner),
+						},
+					},
+					Spec: compv1alpha1.TailoredProfileSpec{
+						EnableRules: []compv1alpha1.RuleReferenceSpec{
+							{
+								Name:      "rule-11",
+								Rationale: "Why not",
+							},
+							{
+								Name:      "rule-12",
+								Rationale: "Why not",
+							},
+							{
+								Name:      "rule-13",
+								Rationale: "Why not",
+							},
+						},
+						SetValues: []compv1alpha1.VariableValueSpec{
+							{
+								Name:      "var-6",
+								Rationale: "Why not",
+								Value:     "1234",
+							},
+							{
+								Name:      "var-7",
+								Rationale: "Why not",
+								Value:     "1234",
+							},
+						},
+					},
+				}
+
+				createErr := r.Client.Create(ctx, tp)
+				Expect(createErr).To(BeNil())
+			})
+			It("succeeds", func() {
+				tpKey := types.NamespacedName{
+					Name:      tpName,
+					Namespace: namespace,
+				}
+				tpReq := reconcile.Request{}
+				tpReq.Name = tpName
+				tpReq.Namespace = namespace
+
+				By("Reconciling the first time (setting ownership)")
+				_, err := r.Reconcile(context.TODO(), tpReq)
+				Expect(err).To(BeNil())
+
+				tp := &compv1alpha1.TailoredProfile{}
+				geterr := r.Client.Get(ctx, tpKey, tp)
+				Expect(geterr).To(BeNil())
+
+				Expect(tp.GetAnnotations()).NotTo(BeNil())
+				Expect(tp.GetAnnotations()[cmpv1alpha1.ProductTypeAnnotation]).To(Equal(string(compv1alpha1.ScanTypePlatform)))
+
+				By("Reconciling a second time (setting status)")
+				_, err = r.Reconcile(context.TODO(), tpReq)
+
+				tp = &compv1alpha1.TailoredProfile{}
+				geterr = r.Client.Get(ctx, tpKey, tp)
+				Expect(geterr).To(BeNil())
+
+				By("Has the appropriate status")
+				Expect(tp.Status.State).To(Equal(compv1alpha1.TailoredProfileStateReady))
+
+			})
+		})
+	})
+
 })

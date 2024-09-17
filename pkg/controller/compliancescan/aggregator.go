@@ -83,6 +83,7 @@ func (r *ReconcileComplianceScan) newAggregatorPod(scanInstance *compv1alpha1.Co
 						"--content=" + absContentPath(scanInstance.Spec.Content),
 						"--scan=" + scanInstance.Name,
 						"--namespace=" + scanInstance.Namespace,
+						"--scanner-type=" + string(scanInstance.Spec.ScannerType),
 					},
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: &falseP,

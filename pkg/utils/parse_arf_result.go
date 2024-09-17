@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -485,6 +486,52 @@ func ParseContent(dsReader io.Reader) (*xmlquery.Node, error) {
 		return nil, err
 	}
 	return dsDom, nil
+}
+
+func ParseCelResultFromContent(scheme *runtime.Scheme, scanName string, namespace string,
+	resultsReader io.Reader, manualRules []string) ([]*ParseResult, error) {
+	// results are actually in v1alpha1.RuleResult serialized json format
+	// we need to deserialize them into RuleResult objects
+	// then we can use the RuleResult objects to create ComplianceCheckResult objects
+	// and ComplianceRemediation objects
+	var resultsList []*compv1alpha1.RuleResult
+	err := json.NewDecoder(resultsReader).Decode(&resultsList)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]*ParseResult, 0)
+	for _, result := range resultsList {
+		ruleResult := result.Status
+		warnings := result.Warnings
+		warnings = append(warnings, result.Message)
+		// check if rule is set as manual rules in TailoredProfile
+		if xccdf.IsManualRule(IDToDNSFriendlyName(result.ID), manualRules) {
+			ruleResult = compv1alpha1.CheckResultManual
+		}
+
+		pr := &ParseResult{
+			Id: result.ID,
+			CheckResult: &compv1alpha1.ComplianceCheckResult{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      nameFromId(scanName, result.ID),
+					Namespace: namespace,
+				},
+				ID:           result.ID,
+				Status:       ruleResult,
+				Severity:     result.Severity,
+				Instructions: result.Instructions,
+				Description:  result.Description,
+				Rationale:    result.Rationale,
+				Warnings:     warnings,
+				ValuesUsed:   result.ValuesUsed,
+			},
+		}
+
+		results = append(results, pr)
+	}
+
+	return results, nil
 }
 
 func ParseResultsFromContentAndXccdf(scheme *runtime.Scheme, scanName string, namespace string,

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 
 	ocpcfgv1 "github.com/openshift/api/config/v1"
@@ -145,6 +146,26 @@ func ResourceExists(dc discovery.DiscoveryInterface, apiGroupVersion, kind strin
 var ErrServiceMonitorNotPresent = fmt.Errorf("no ServiceMonitor registered with the API")
 
 type ServiceMonitorUpdater func(*monitoringv1.ServiceMonitor) error
+
+func DeriveResourcePath(gvr schema.GroupVersionResource, namespace string) string {
+	var objPath string
+	if gvr.Group == "" {
+		// Core resource like "namespaces"
+		if namespace == "" {
+			objPath = fmt.Sprintf("/api/%s/%s", gvr.Version, gvr.Resource)
+		} else {
+			objPath = fmt.Sprintf("/api/%s/namespaces/%s/%s", gvr.Version, namespace, gvr.Resource)
+		}
+	} else {
+		// Non-core resource
+		if namespace == "" {
+			objPath = fmt.Sprintf("/apis/%s/%s/%s", gvr.Group, gvr.Version, gvr.Resource)
+		} else {
+			objPath = fmt.Sprintf("/apis/%s/%s/namespaces/%s/%s", gvr.Group, gvr.Version, namespace, gvr.Resource)
+		}
+	}
+	return objPath
+}
 
 // GenerateServiceMonitor generates a prometheus-operator ServiceMonitor object
 // based on the passed Service object.

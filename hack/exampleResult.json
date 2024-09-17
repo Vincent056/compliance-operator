@@ -1,0 +1,28 @@
+[
+    {
+        "id": "xccdf_org.ssgproject.content_rule_configure_network_policies_namespaces",
+        "title": "Ensure that application Namespaces have Network Policies defined.",
+        "description": "Use network policies to isolate traffic in your cluster network.",
+        "rationale": "Running different applications on the same Kubernetes cluster creates a risk of one compromised application attacking a neighboring application. Network segmentation is important to ensure that containers can communicate only with those they are supposed to. When a network policy is introduced to a given namespace, all traffic not allowed by the policy is denied. However, if there are no network policies in a namespace all traffic will be allowed into and out of the pods in that namespace.",
+        "severity": "high",
+        "status": "FAIL",
+        "instructions": "Verify that the every non-control plane namespace has an appropriate\nNetworkPolicy.\n\nTo get all the non-control plane namespaces, you can do the\nfollowing command $ oc get  namespaces -o json | jq '[.items[] | select((.metadata.name | startswith(\"openshift\") | not) and (.metadata.name | startswith(\"kube-\") | not) and .metadata.name != \"default\" and (true)) | .metadata.name ]'\n\nTo get all the non-control plane namespaces with a NetworkPolicy, you can do the\nfollowing command $ oc get --all-namespaces networkpolicies -o json | jq '[.items[] | select((.metadata.namespace | startswith(\"openshift\") | not) and (.metadata.namespace | startswith(\"kube-\") | not) and .metadata.namespace != \"default\" and (true)) | .metadata.namespace] | unique'\n\nNamespaces matching the variable ocp4-var-network-policies-namespaces-exempt-regex regex are excluded from this check.\n\nMake sure that the namespaces displayed in the commands of the commands match.\nIs it the case that Namespaced Network Policies needs review?",
+        "warnings": [
+            ""
+        ],
+        "message": "Application Namespaces do not have Network Policies defined."
+    },
+    {
+        "id": "xccdf_org.ssgproject.content_rule_etcd_cert_file",
+        "title": "Ensure the etcd client certificate is set",
+        "description": "To ensure the etcd service is serving TLS to clients, make sure the etcd-pod* ConfigMaps in the openshift-etcd namespace contain the following argument for the etcd binary in the etcd pod:\n\n--cert-file=/etc/kubernetes/static-pod-certs/secrets/etcd-all-[a-z]+/etcd-serving-NODE_NAME.crt\n\n. Note that the\n\n[a-z]+\n\nis being used since the directory might change between OpenShift versions.",
+        "rationale": "Without cryptographic integrity protections, information can be altered by unauthorized users without detection.",
+        "severity": "medium",
+        "status": "PASS",
+        "instructions": "Run the following command:\noc get -nopenshift-etcd cm etcd-pod -oyaml | grep -E \"\\-\\-cert-file=/etc/kubernetes/static-pod-certs/secrets/etcd-all-[a-z]+/etcd-serving-NODE_NAME.crt\"\nVerify that there is a certificate configured.\nIs it the case that the etcd client certificate is not configure",
+        "warnings": [
+            ""
+        ],
+        "message": "Ensure the etcd client certificate is set: true\n"
+    }
+]

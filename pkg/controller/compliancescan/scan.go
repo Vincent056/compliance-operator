@@ -170,6 +170,7 @@ func newScanPodForNode(scanInstance *compv1alpha1.ComplianceScan, node *corev1.N
 						"--arf-file=/reports/report-arf.xml",
 						"--results-file=/reports/report.xml",
 						"--exit-code-file=/reports/exit_code",
+						"--scanner-type=" + string(scanInstance.Spec.ScannerType),
 						"--oscap-output-file=/reports/cmd_output",
 						"--config-map-name=" + cmName,
 						"--node-name=" + node.Name,
@@ -284,6 +285,146 @@ func newScanPodForNode(scanInstance *compv1alpha1.ComplianceScan, node *corev1.N
 	}
 }
 
+// Add a scanner pod to the scan instance
+// based on scannerType
+func addScannerContainer(scanInstance *compv1alpha1.ComplianceScan, pod *corev1.Pod) *corev1.Pod {
+	falseP := false
+	trueP := true
+
+	switch scanInstance.Spec.ScannerType {
+	case compv1alpha1.ScannerTypeCelScanner:
+		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
+			Name:  CELScannerContainerName,
+			Image: utils.GetComponentImage(utils.OPERATOR),
+			Command: []string{
+				"compliance-operator", "cel-scanner",
+				"--api-resource-dir=" + PlatformScanDataRoot,
+				"--profile=" + scanInstance.Spec.Profile,
+				"--check-resultdir=" + "/reports",
+				"--scan-type=" + "Platform",
+				"--platform=" + os.Getenv("PLATFORM"),
+				"--debug=" + fmt.Sprintf("%t", scanInstance.Spec.Debug),
+				"--tailoring=" + fmt.Sprintf("%t", scanInstance.Spec.TailoringConfigMap != nil),
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: &falseP,
+				ReadOnlyRootFilesystem:   &trueP,
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("50Mi"),
+					corev1.ResourceCPU:    resource.MustParse("10m"),
+				},
+				// NOTE: when changing the default limits, remember to also change the
+				// doc text in the CRD.
+				Limits: *scanLimits(scanInstance, "500Mi", "100m"),
+			},
+			Env: []corev1.EnvVar{
+				{
+					Name: "POD_NAMESPACE",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{
+							FieldPath: "metadata.namespace",
+						},
+					},
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "report-dir",
+					MountPath: "/reports",
+				},
+				{
+					Name:      "content-dir",
+					MountPath: "/content",
+					ReadOnly:  true,
+				},
+				{
+					Name:      "tmp-dir",
+					MountPath: "/tmp",
+				},
+				{
+					Name:      "fetch-results",
+					MountPath: PlatformScanDataRoot,
+				},
+				{
+					Name:      scriptCmForScan(scanInstance),
+					MountPath: "/scripts",
+					ReadOnly:  true,
+				},
+			},
+			EnvFrom: []corev1.EnvFromSource{
+				{
+					ConfigMapRef: &corev1.ConfigMapEnvSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: envCmForPlatformScan(scanInstance),
+						},
+					},
+				},
+			},
+		})
+	default:
+		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
+			Name:    OpenSCAPScanContainerName,
+			Image:   utils.GetComponentImage(utils.OPENSCAP),
+			Command: []string{OpenScapScriptPath},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: &falseP,
+				ReadOnlyRootFilesystem:   &trueP,
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("50Mi"),
+					corev1.ResourceCPU:    resource.MustParse("10m"),
+				},
+				// NOTE: when changing the default limits, remember to also change the
+				// doc text in the CRD.
+				Limits: *scanLimits(scanInstance, "500Mi", "100m"),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "report-dir",
+					MountPath: "/reports",
+				},
+				{
+					Name:      "content-dir",
+					MountPath: "/content",
+					ReadOnly:  true,
+				},
+				{
+					Name:      "tmp-dir",
+					MountPath: "/tmp",
+				},
+				{
+					Name:      "fetch-results",
+					MountPath: PlatformScanDataRoot,
+				},
+				{
+					Name:      scriptCmForScan(scanInstance),
+					MountPath: "/scripts",
+					ReadOnly:  true,
+				},
+			},
+			EnvFrom: []corev1.EnvFromSource{
+				{
+					ConfigMapRef: &corev1.ConfigMapEnvSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: envCmForPlatformScan(scanInstance),
+						},
+					},
+				},
+			},
+		})
+	}
+	return pod
+}
+
 func (r *ReconcileComplianceScan) newPlatformScanPod(scanInstance *compv1alpha1.ComplianceScan, logger logr.Logger) *corev1.Pod {
 	podName := getPodForNodeName(scanInstance.Name, PlatformScanName)
 	cmName := getConfigMapForNodeName(scanInstance.Name, PlatformScanName)
@@ -297,6 +438,7 @@ func (r *ReconcileComplianceScan) newPlatformScanPod(scanInstance *compv1alpha1.
 		"--resultdir=" + PlatformScanDataRoot,
 		"--profile=" + scanInstance.Spec.Profile,
 		"--warnings-output-file=/reports/warning_output",
+		"--scanner=" + string(scanInstance.Spec.ScannerType),
 		"--platform=" + os.Getenv("PLATFORM"),
 	}
 	if scanInstance.Spec.TailoringConfigMap != nil {
@@ -313,7 +455,7 @@ func (r *ReconcileComplianceScan) newPlatformScanPod(scanInstance *compv1alpha1.
 		collectorCmd = append(collectorCmd, "--debug")
 	}
 
-	return &corev1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: common.GetComplianceOperatorNamespace(),
@@ -427,6 +569,7 @@ func (r *ReconcileComplianceScan) newPlatformScanPod(scanInstance *compv1alpha1.
 						"--arf-file=/reports/report-arf.xml",
 						"--results-file=/reports/report.xml",
 						"--exit-code-file=/reports/exit_code",
+						"--scanner-type=" + string(scanInstance.Spec.ScannerType),
 						"--oscap-output-file=/reports/cmd_output",
 						"--warnings-output-file=/reports/warning_output",
 						"--config-map-name=" + cmName,
@@ -458,60 +601,6 @@ func (r *ReconcileComplianceScan) newPlatformScanPod(scanInstance *compv1alpha1.
 					},
 					VolumeMounts: getLogCollectorVolumeMounts(scanInstance),
 				},
-				{
-					Name:    OpenSCAPScanContainerName,
-					Image:   utils.GetComponentImage(utils.OPENSCAP),
-					Command: []string{OpenScapScriptPath},
-					SecurityContext: &corev1.SecurityContext{
-						AllowPrivilegeEscalation: &falseP,
-						ReadOnlyRootFilesystem:   &trueP,
-						Capabilities: &corev1.Capabilities{
-							Drop: []corev1.Capability{"ALL"},
-						},
-					},
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceMemory: resource.MustParse("50Mi"),
-							corev1.ResourceCPU:    resource.MustParse("10m"),
-						},
-						// NOTE: when changing the default limits, remember to also change the
-						// doc text in the CRD.
-						Limits: *scanLimits(scanInstance, "500Mi", "100m"),
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "report-dir",
-							MountPath: "/reports",
-						},
-						{
-							Name:      "content-dir",
-							MountPath: "/content",
-							ReadOnly:  true,
-						},
-						{
-							Name:      "tmp-dir",
-							MountPath: "/tmp",
-						},
-						{
-							Name:      "fetch-results",
-							MountPath: PlatformScanDataRoot,
-						},
-						{
-							Name:      scriptCmForScan(scanInstance),
-							MountPath: "/scripts",
-							ReadOnly:  true,
-						},
-					},
-					EnvFrom: []corev1.EnvFromSource{
-						{
-							ConfigMapRef: &corev1.ConfigMapEnvSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: envCmForPlatformScan(scanInstance),
-								},
-							},
-						},
-					},
-				},
 			},
 			NodeSelector:  r.schedulingInfo.Selector,
 			Tolerations:   r.schedulingInfo.Tolerations,
@@ -519,6 +608,8 @@ func (r *ReconcileComplianceScan) newPlatformScanPod(scanInstance *compv1alpha1.
 			Volumes:       getPlatformScannerPodVolumes(scanInstance),
 		},
 	}
+
+	return addScannerContainer(scanInstance, pod)
 }
 
 func (r *ReconcileComplianceScan) deleteScanPods(instance *compv1alpha1.ComplianceScan, nodes []corev1.Node, logger logr.Logger) error {

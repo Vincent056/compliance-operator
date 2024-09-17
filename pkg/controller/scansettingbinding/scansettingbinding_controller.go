@@ -465,9 +465,11 @@ func profileReferenceToScan(reference *profileReference) (*compliancev1alpha1.Co
 		Name:               reference.name,
 	}
 
-	err = fillContentData(reference.profileBundle, &scan)
-	if err != nil {
-		return nil, "", err
+	if reference.profileBundle != nil {
+		err = fillContentData(reference.profileBundle, &scan)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 
 	if reference.tailoredProfile != nil {
@@ -567,6 +569,15 @@ func setScanType(scan *compliancev1alpha1.ComplianceScanSpecWrapper, annotations
 	var err error
 
 	scan.ComplianceScanSpec.ScanType, err = getScanType(annotations)
+	if err != nil {
+		return err
+	}
+
+	scannerType, err := getScannerType(annotations)
+	if err != nil {
+		return err
+	}
+	scan.ComplianceScanSpec.ScannerType = scannerType
 	return err
 }
 
@@ -586,50 +597,25 @@ func getScanType(annotations map[string]string) (compliancev1alpha1.ComplianceSc
 	return compliancev1alpha1.ScanTypePlatform, nil
 }
 
-func getTpScanType(
-	r *ReconcileScanSettingBinding,
-	binding *compliancev1alpha1.ScanSettingBinding,
-	apiGroup string,
-	prfObj *unstructured.Unstructured,
-	logger logr.Logger,
-) (compliancev1alpha1.ComplianceScanType, error) {
-	profileType, err := getScanType(prfObj.GetAnnotations())
-	if err == nil {
-		return profileType, nil
-	} else if prfObj.GetKind() != "TailoredProfile" {
-		// profiles are pretty much always annotated. If not, let's just assume it's a platform scan. If not,
-		// the scan would just fail later..
-		logger.Info("error getting profile scan type, assuming Platform", "profile", prfObj.GetName(), "error", err)
-		return compliancev1alpha1.ScanTypePlatform, nil
+func getScannerType(annotations map[string]string) (compliancev1alpha1.ScannerTypeEnum, error) {
+	scannerType, ok := annotations[compliancev1alpha1.ScannerTypeAnnotation]
+	log.Info("Scanner type", "scannerType", scannerType)
+	log.Info("Annotations", "annotations", annotations)
+
+	if !ok {
+		return compliancev1alpha1.ScannerTypeUnknown, fmt.Errorf("no %s label found", compliancev1alpha1.ScannerTypeAnnotation)
 	}
 
-	logger.Info("TailoredProfile had no annotation, trying the parent profile", "tailoredProfile", prfObj.GetName())
-	val, found, nsErr := unstructured.NestedString(prfObj.Object, "spec", "extends")
-	if nsErr != nil {
-		logger.Error(nsErr, "Fetching state of tailored profile",
-			"TailoredProfile", prfObj.GetName())
-		return compliancev1alpha1.ScanTypePlatform, nsErr
-	} else if !found {
-		// if there is no extends, then this is a custom-created profile. Custom profiles would indicate that they
-		// are node profiles either by using the -node suffix or by being properly annotated. Otherwise, even
-		// the plain scan profile would assume platform, so let's do the same here.
-		logger.Info("No extends field found in tailored profile", "TailoredProfile", prfObj.GetName())
-		return compliancev1alpha1.ScanTypePlatform, nil
+	switch strings.ToLower(scannerType) {
+	case strings.ToLower(string(compliancev1alpha1.ScannerTypeOpenSCAP)):
+		return compliancev1alpha1.ScannerTypeOpenSCAP, nil
+	case strings.ToLower(string(compliancev1alpha1.ScannerTypeCelScanner)):
+		return compliancev1alpha1.ScannerTypeCelScanner, nil
+	default:
+		break
 	}
 
-	key := types.NamespacedName{Namespace: prfObj.GetNamespace(), Name: val}
-	extendsObj, err := getUnstructured(r, binding, key, "Profile", apiGroup, logger)
-	if err != nil {
-		return compliancev1alpha1.ScanTypePlatform, fmt.Errorf("error getting Profile %s: %w", val, err)
-	}
-
-	extendsType, err := getScanType(extendsObj.GetAnnotations())
-	if err != nil {
-		return extendsType, common.NewNonRetriableCtrlError("error getting scan type for profile %s: %w", extendsObj.GetName(), err)
-	}
-
-	logger.Info("Got scan type from parent profile", "tailoredProfile", prfObj.GetName(), "profile", extendsObj.GetName(), "type", extendsType)
-	return extendsType, nil
+	return compliancev1alpha1.ScannerTypeUnknown, nil
 }
 
 func resolveProfileReference(r *ReconcileScanSettingBinding, instance *compliancev1alpha1.ScanSettingBinding, profile *unstructured.Unstructured, logger logr.Logger) (*profileReference, error) {
@@ -649,6 +635,11 @@ func resolveProfileReference(r *ReconcileScanSettingBinding, instance *complianc
 	} else if profile.GetKind() == "TailoredProfile" {
 		logger.Info("Retrieved a TailoredProfile, must also retrieve a Profile it points to")
 		profReference.tailoredProfile = profile
+		tp := &compliancev1alpha1.TailoredProfile{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(profile.Object, tp)
+		if err != nil {
+			return nil, err
+		}
 
 		if ownerReferenceWithKind(profile, "Profile") != nil {
 			profReference.profile, err = resolveProfile(r, instance, &profReference, logger)
@@ -665,6 +656,10 @@ func resolveProfileReference(r *ReconcileScanSettingBinding, instance *complianc
 			if err != nil {
 				return nil, err
 			}
+		} else if utils.IsCustomTailoredProfile(tp) {
+			// Custom tailored profiles are not owned by anything, so we can't determine the parent
+			// profile or bundle. We can only assume that it's a platform scan.
+			return &profReference, nil
 		} else {
 			return nil, common.NewNonRetriableCtrlError("TailoredProfile must be owned by a Profile or ProfileBundle")
 		}
