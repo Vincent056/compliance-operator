@@ -1042,6 +1042,7 @@ spec:
           - compliance.openshift.io
           resources:
           - compliancesuites
+          - compliancescans
           - scansettings
           - scansettingbindings
           - tailoredprofiles
@@ -1063,7 +1064,13 @@ spec:
           resources:
           - compliancecheckresults
           verbs:
+          - get
+          - list
+          - watch
+          - update
+          - patch
           - create
+          - delete
         - apiGroups:
           - machineconfiguration.openshift.io
           resources:
