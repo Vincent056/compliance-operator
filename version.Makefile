@@ -3,4 +3,4 @@
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
 
 PREVIOUS_VERSION?=1.7.1
-VERSION?=1.7.1
+VERSION?=1.8.0-dev
