@@ -74,7 +74,7 @@ DEFAULT_OPENSCAP_TAG=latest
 OPENSCAP_TAG?=$(DEFAULT_OPENSCAP_TAG)
 OPENSCAP_DOCKER_FILE=./images/openscap/Containerfile
 DEFAULT_OPENSCAP_IMAGE=$(DEFAULT_KONFLUX_REPO)/$(APP_NAME)-openscap-dev:$(DEFAULT_KONFLUX_TAG)
-OPENSCAP_IMAGE?=$(DEFAULT_REPO)/$(OPENSCAP_NAME):$(OPENSCAP_TAG)
+OPENSCAP_IMAGE?=$(DEFAULT_OPENSCAP_IMAGE)
 
 # Image path to use. Set this if you want to use a specific path for building
 # or your e2e tests. This is overwritten if we build the image and push it to
