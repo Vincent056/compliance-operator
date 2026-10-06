@@ -1748,7 +1748,9 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	requiredRuleName := prefixName(pbName, requiredRule)
 	requiredVersionRuleName := prefixName(pbName, "version-detect-in-ocp")
 	requiredVariableName := prefixName(pbName, "var-streaming-connection-timeouts")
-	suiteName := framework.GetObjNameFromTest(t)
+	// The "-node" suffix makes the TailoredProfile, which mixes node and
+	// platform rules, a node profile (see the TailoredProfile controller).
+	suiteName := framework.GetObjNameFromTest(t) + "-node"
 
 	tp := &compv1alpha1.TailoredProfile{
 		ObjectMeta: metav1.ObjectMeta{
