@@ -3228,24 +3228,24 @@ func TestResultServerTolerationsOnTaintedNode(t *testing.T) {
 	}
 
 	taintKey := "key1"
-	scanSettingName := "default"
-	if defaultScanSetting.RawResultStorage.NodeSelector == nil || len(defaultScanSetting.RawResultStorage.NodeSelector) == 0 {
-		scanSettingName = framework.GetObjNameFromTest(t) + "-worker-ss"
-		customScanSetting := defaultScanSetting.DeepCopy()
-		customScanSetting.ObjectMeta = metav1.ObjectMeta{Name: scanSettingName, Namespace: f.OperatorNamespace}
-		customScanSetting.RawResultStorage.NodeSelector = map[string]string{"node-role.kubernetes.io/worker": ""}
-		customScanSetting.RawResultStorage.Tolerations = []corev1.Toleration{
-			{Effect: corev1.TaintEffectNoSchedule, Key: "node-role.kubernetes.io/master", Operator: corev1.TolerationOpExists},
-			{Effect: corev1.TaintEffectNoExecute, Key: "node.kubernetes.io/not-ready", Operator: corev1.TolerationOpExists, TolerationSeconds: &[]int64{300}[0]},
-			{Effect: corev1.TaintEffectNoExecute, Key: "node.kubernetes.io/unreachable", Operator: corev1.TolerationOpExists, TolerationSeconds: &[]int64{300}[0]},
-			{Effect: corev1.TaintEffectNoSchedule, Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists},
-			{Effect: corev1.TaintEffectNoExecute, Key: taintKey, Value: "value1", Operator: corev1.TolerationOpEqual},
-		}
-		if err := f.Client.Create(context.TODO(), customScanSetting, nil); err != nil {
-			t.Fatalf("failed to create ScanSetting with worker nodeSelector: %v", err)
-		}
-		defer f.Client.Delete(context.TODO(), customScanSetting)
+	// Pin the result servers to the tainted node: with the default node
+	// selector they can land on any other node, and the test only shows the
+	// toleration works if they run on the tainted one.
+	scanSettingName := framework.GetObjNameFromTest(t) + "-worker-ss"
+	customScanSetting := defaultScanSetting.DeepCopy()
+	customScanSetting.ObjectMeta = metav1.ObjectMeta{Name: scanSettingName, Namespace: f.OperatorNamespace}
+	customScanSetting.RawResultStorage.NodeSelector = map[string]string{corev1.LabelHostname: workerNode.Labels[corev1.LabelHostname]}
+	customScanSetting.RawResultStorage.Tolerations = []corev1.Toleration{
+		{Effect: corev1.TaintEffectNoSchedule, Key: "node-role.kubernetes.io/master", Operator: corev1.TolerationOpExists},
+		{Effect: corev1.TaintEffectNoExecute, Key: "node.kubernetes.io/not-ready", Operator: corev1.TolerationOpExists, TolerationSeconds: &[]int64{300}[0]},
+		{Effect: corev1.TaintEffectNoExecute, Key: "node.kubernetes.io/unreachable", Operator: corev1.TolerationOpExists, TolerationSeconds: &[]int64{300}[0]},
+		{Effect: corev1.TaintEffectNoSchedule, Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists},
+		{Effect: corev1.TaintEffectNoExecute, Key: taintKey, Value: "value1", Operator: corev1.TolerationOpEqual},
 	}
+	if err := f.Client.Create(context.TODO(), customScanSetting, nil); err != nil {
+		t.Fatalf("failed to create ScanSetting pinned to node %s: %v", workerNode.Name, err)
+	}
+	defer f.Client.Delete(context.TODO(), customScanSetting)
 
 	taint := corev1.Taint{Key: taintKey, Value: "value1", Effect: corev1.TaintEffectNoExecute}
 	if err := f.TaintNode(workerNode, taint); err != nil {
@@ -3297,7 +3297,7 @@ func TestResultServerTolerationsOnTaintedNode(t *testing.T) {
 		}
 	}()
 
-	resultServerNodeNames, err := f.WaitForResultServerPodsWithNodeSelector(map[string]string{"node-role.kubernetes.io/worker": ""})
+	resultServerNodeNames, err := f.WaitForResultServerPodsWithNodeSelector(map[string]string{corev1.LabelHostname: workerNode.Labels[corev1.LabelHostname]})
 	if err != nil {
 		t.Fatal(err)
 	}
