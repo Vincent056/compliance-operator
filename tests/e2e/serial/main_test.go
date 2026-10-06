@@ -1832,8 +1832,7 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	// We need to check that the remediation is auto-applied and save
 	// the object so we can delete it later
 	remName := scanName + "-kubelet-enable-streaming-connections"
-	f.WaitForGenericRemediationToBeAutoApplied(remName, f.OperatorNamespace)
-	err = f.WaitForGenericRemediationToBeAutoApplied(remName, f.OperatorNamespace)
+	err = f.WaitForGenericRemediationToBeAutoAppliedInPool(remName, f.OperatorNamespace, pool.Name)
 	if err != nil {
 		t.Fatal(err)
 	}

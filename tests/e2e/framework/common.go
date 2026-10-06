@@ -3410,6 +3410,19 @@ func (f *Framework) RemoveObsoleteRemediationAndCheck(namespace, name, renderedM
 }
 
 func (f *Framework) WaitForGenericRemediationToBeAutoApplied(remName, remNamespace string) error {
+	return f.waitForGenericRemediationToBeAutoApplied(remName, remNamespace, f.WaitForNodesToBeReady)
+}
+
+// WaitForGenericRemediationToBeAutoAppliedInPool is
+// WaitForGenericRemediationToBeAutoApplied for a lane test: it waits only for
+// the nodes in pool, so other lanes rebooting don't hold it up.
+func (f *Framework) WaitForGenericRemediationToBeAutoAppliedInPool(remName, remNamespace, pool string) error {
+	return f.waitForGenericRemediationToBeAutoApplied(remName, remNamespace, func() error {
+		return f.WaitForNodesToBeReadyInPool(pool)
+	})
+}
+
+func (f *Framework) waitForGenericRemediationToBeAutoApplied(remName, remNamespace string, waitForNodes func() error) error {
 	rem := &compv1alpha1.ComplianceRemediation{}
 	var lastErr error
 	timeouterr := wait.Poll(RetryInterval, Timeout, func() (bool, error) {
@@ -3437,11 +3450,7 @@ func (f *Framework) WaitForGenericRemediationToBeAutoApplied(remName, remNamespa
 		return fmt.Errorf("timed out waiting for remediation to be applied: %s", timeouterr)
 	}
 	log.Printf("machines updated with remediation")
-	err := f.WaitForNodesToBeReady()
-	if err != nil {
-		return err
-	}
-	return nil
+	return waitForNodes()
 }
 
 func (f *Framework) AssertCronJobIsSuspended(name string) error {
