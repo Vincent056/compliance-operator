@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
-	configv1 "github.com/openshift/api/config/v1"
 	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -44,11 +43,13 @@ func (p *TestPool) NodeRoleSelector() map[string]string {
 // goes to the longest waiting test first, so the slowest test doesn't start
 // last and stretch the run. Tests missing here count as 0 and run last.
 var laneTestMinutes = map[string]int{
-	"TestUpdateRemediation":               14,
-	"TestAutoRemediate":                   11,
-	"TestRuntimeSSHConfigWithRemediation": 9,
-	"TestUnapplyRemediation":              9,
-	"TestKubeletConfigRemediation":        7,
+	"TestUpdateRemediation":                    14,
+	"TestAutoRemediate":                        11,
+	"TestRuntimeSSHConfigWithRemediation":      9,
+	"TestUnapplyRemediation":                   9,
+	"TestKubeletConfigRemediation":             7,
+	"TestTolerations":                          3,
+	"TestResultServerTolerationsOnTaintedNode": 3,
 }
 
 // laneQueue hands out lanes to waiting tests, longest test first.
@@ -138,19 +139,15 @@ func (f *Framework) startTestPools() error {
 	}
 
 	n := testPoolCount()
-	// Keep one worker out of the lanes when there's more than one, so pods
-	// evicted while a lane reboots (router, registry, monitoring) have somewhere
-	// to go instead of holding up the drain. When the masters are schedulable
-	// they take those pods, so every worker can be a lane. Lane scans only
-	// select their own lane role, so they never run on the masters.
-	spare := 1
-	if f.mastersSchedulable() {
-		spare = 0
+	// Keep one worker out of the lanes when there's more than one. Pods
+	// evicted while a lane reboots (router, registry, monitoring) need
+	// somewhere to go, and the parallel scan tests scan the spare workers
+	// (SpareRole) instead of the lane nodes.
+	spare := 0
+	if len(nodes) > 1 {
+		spare = 1
 	}
-	maxLanes := len(nodes)
-	if maxLanes > 1 {
-		maxLanes -= spare
-	}
+	maxLanes := len(nodes) - spare
 	// With E2E_SCALE_WORKERS=true, add the workers the lanes are missing. The
 	// new nodes take minutes to join, so tests start on the lanes the existing
 	// workers give and each new node becomes a lane once it's ready.
@@ -205,18 +202,9 @@ func (f *Framework) startTestPools() error {
 		}
 		go f.readyTestPool(i, f.testPoolNames[i], nodes[i].Name)
 	}
-	// Workers that aren't lanes this time may still be in a lane pool from an
-	// earlier run on the same cluster: take them out, and let MCO move them
-	// back to the worker pool before tests start.
-	for i := now; i < len(nodes); i++ {
-		removedStale, err := f.setPoolRoleLabel(&nodes[i], "")
-		if err != nil {
-			return fmt.Errorf("failed to remove stale lane labels from %s: %w", nodes[i].Name, err)
-		}
-		if removedStale {
-			if err := f.waitForNodeOnPoolConfig(nodes[i].Name, "worker"); err != nil {
-				return err
-			}
+	if target > 1 {
+		if err := f.labelSpareWorkers(nodes[now:]); err != nil {
+			return err
 		}
 	}
 	if now < target {
@@ -334,6 +322,11 @@ func nodeReadyAndConfigured(n *corev1.Node) bool {
 		a["machineconfiguration.openshift.io/currentConfig"] == a["machineconfiguration.openshift.io/desiredConfig"]
 }
 
+// SpareRole is the node role given to the workers kept out of the lanes. The
+// parallel scan tests scan those workers (WorkerScanRole) instead of every
+// worker, so they never scan a lane node that a remediation test reboots.
+const SpareRole = "e2e-spare"
+
 // waitForNodeOnPoolConfig waits until the node runs the pool's current
 // rendered config, for example after it left a lane pool.
 func (f *Framework) waitForNodeOnPoolConfig(nodeName, pool string) error {
@@ -360,15 +353,27 @@ func (f *Framework) waitForNodeOnPoolConfig(nodeName, pool string) error {
 	return nil
 }
 
-// mastersSchedulable reports whether the cluster scheduler lets ordinary pods
-// run on the control plane (schedulers.config.openshift.io/cluster).
-func (f *Framework) mastersSchedulable() bool {
-	s := &configv1.Scheduler{}
-	if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: "cluster"}, s); err != nil {
-		log.Printf("couldn't read the cluster Scheduler config, assuming masters aren't schedulable: %s", err)
-		return false
+// labelSpareWorkers gives the spare workers the SpareRole label, removing any
+// lane label an earlier run on the same cluster left on them. (Lane nodes lose
+// a stale SpareRole label when they get their lane label.)
+func (f *Framework) labelSpareWorkers(spares []corev1.Node) error {
+	label := "node-role.kubernetes.io/" + SpareRole
+	for i := range spares {
+		removedStale, err := f.setPoolRoleLabel(&spares[i], label)
+		if err != nil {
+			return fmt.Errorf("failed to label spare worker %s: %w", spares[i].Name, err)
+		}
+		if removedStale {
+			// It was in a lane pool; let MCO move it back to the worker pool
+			// before scan tests use it.
+			if err := f.waitForNodeOnPoolConfig(spares[i].Name, "worker"); err != nil {
+				return err
+			}
+		}
+		log.Printf("spare worker %s gets role %s for the parallel scan tests", spares[i].Name, SpareRole)
 	}
-	return s.Spec.MastersSchedulable
+	f.haveSpares = len(spares) > 0
+	return nil
 }
 
 // readyTestPool waits for lane i's pool to roll out, creates the lane's
@@ -420,9 +425,11 @@ func (f *Framework) finishTestPools() error {
 // AcquireTestPool checks out an isolated pool lane for a destructive test,
 // blocking until one is free, and returns it when the test ends. Call
 // t.Parallel() before this so lanes are shared across concurrent tests. Waiting
-// tests get lanes longest first (laneTestMinutes).
+// tests get lanes longest first (laneTestMinutes), and only once every
+// scan-phase test has finished.
 func (f *Framework) AcquireTestPool(t *testing.T) *TestPool {
 	t.Helper()
+	f.waitForScanPhase(t)
 	p, wait := f.TestPools.get(laneTestMinutes[t.Name()])
 	if p == nil {
 		select {

@@ -930,28 +930,32 @@ func (f *Framework) waitForMachineConfigPoolUpdated(n string) error {
 	return nil
 }
 
-// poolRoleLabel matches the node role labels of the test pool lanes ("e2e",
-// "e2e-<n>").
-var poolRoleLabel = regexp.MustCompile(`^node-role\.kubernetes\.io/` + TestPoolName + `(-[0-9]+)?$`)
+// labelNode adds label, with an empty value, to the named node using a JSON
+// merge patch. A patch carries no resourceVersion, so unlike an Update of a
+// previously listed copy of the node it can't fail with a conflict when
+// something else (kubelet status updates, MCO annotations) has written the node
+// in the meantime.
+func (f *Framework) labelNode(nodeName, label string) error {
+	return f.patchNodeLabel(nodeName, label, "")
+}
 
-// setPoolRoleLabel gives node the role label (empty: none) and, in the same
-// patch, removes any other lane role label an earlier run on the same cluster
-// left on it. A node with two lane labels would be in two MachineConfigPools,
-// and a worker left in a lane would be rebooted by that lane's tests.
+// poolRoleLabel matches the node role labels of the test pool lanes ("e2e",
+// "e2e-<n>") and of the spare workers.
+var poolRoleLabel = regexp.MustCompile(`^node-role\.kubernetes\.io/(` + TestPoolName + `(-[0-9]+)?|` + SpareRole + `)$`)
+
+// setPoolRoleLabel gives node the lane or spare role label and, in the same
+// patch, removes any other lane or spare role label an earlier run on the same
+// cluster left on it. A node with two lane labels would be in two
+// MachineConfigPools, and a spare worker left in a lane would be rebooted by
+// that lane's tests.
 func (f *Framework) setPoolRoleLabel(node *corev1.Node, label string) (removedStale bool, err error) {
-	labels := map[string]interface{}{}
-	if label != "" {
-		labels[label] = ""
-	}
+	labels := map[string]interface{}{label: ""}
 	for k := range node.Labels {
 		if k != label && poolRoleLabel.MatchString(k) {
 			log.Printf("removing stale label %s from node %s", k, node.Name)
 			labels[k] = nil
 			removedStale = true
 		}
-	}
-	if len(labels) == 0 {
-		return false, nil
 	}
 	patch, err := json.Marshal(map[string]interface{}{"metadata": map[string]interface{}{"labels": labels}})
 	if err != nil {
@@ -968,15 +972,11 @@ func (f *Framework) setPoolRoleLabel(node *corev1.Node, label string) (removedSt
 		})
 }
 
-// labelNode adds label, with an empty value, to the named node using a JSON
-// merge patch. A patch carries no resourceVersion, so unlike an Update of a
-// previously listed copy of the node it can't fail with a conflict when
-// something else (kubelet status updates, MCO annotations) has written the node
-// in the meantime.
-func (f *Framework) labelNode(nodeName, label string) error {
+// patchNodeLabel sets label to value (nil removes it) on the named node.
+func (f *Framework) patchNodeLabel(nodeName, label string, value interface{}) error {
 	patch, err := json.Marshal(map[string]interface{}{
 		"metadata": map[string]interface{}{
-			"labels": map[string]string{label: ""},
+			"labels": map[string]interface{}{label: value},
 		},
 	})
 	if err != nil {
@@ -2793,11 +2793,18 @@ func (f *Framework) UntaintNode(nodeName, taintKey string) error {
 	return nil
 }
 
-// WaitForResultServerPodsWithNodeSelector polls until 2 result server pods are Running with the given nodeSelector.
+// WaitForResultServerPodsWithNodeSelector polls until 2 result server pods (or one per scan in scans) are Running with the given nodeSelector.
 // It returns the list of node names (pod.Spec.NodeName) where those pods are scheduled.
-func (f *Framework) WaitForResultServerPodsWithNodeSelector(expectedNodeSelector map[string]string) ([]string, error) {
+//
+// With scans, only the result servers of those scans count, so other tests'
+// result servers in the namespace don't matter, and there must be one per scan.
+func (f *Framework) WaitForResultServerPodsWithNodeSelector(expectedNodeSelector map[string]string, scans ...string) ([]string, error) {
 	const resultServerPodWaitTimeout = 10 * time.Minute
 	resultServerPodLabels := map[string]string{"workload": "resultserver"}
+	ownScans := map[string]bool{}
+	for _, s := range scans {
+		ownScans[s] = true
+	}
 	var list *corev1.PodList
 	var nodeNames []string
 	err := wait.Poll(RetryInterval, resultServerPodWaitTimeout, func() (bool, error) {
@@ -2805,7 +2812,19 @@ func (f *Framework) WaitForResultServerPodsWithNodeSelector(expectedNodeSelector
 		if err := f.Client.List(context.TODO(), list, client.InNamespace(f.OperatorNamespace), client.MatchingLabels(resultServerPodLabels)); err != nil {
 			return false, err
 		}
+		if len(scans) > 0 {
+			own := list.Items[:0]
+			for _, pod := range list.Items {
+				if ownScans[pod.Labels[compv1alpha1.ComplianceScanLabel]] {
+					own = append(own, pod)
+				}
+			}
+			list.Items = own
+		}
 		expectedResultServerPodCount := 2
+		if len(scans) > 0 {
+			expectedResultServerPodCount = len(scans)
+		}
 		if len(list.Items) < expectedResultServerPodCount {
 			return false, nil
 		}

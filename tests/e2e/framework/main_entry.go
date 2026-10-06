@@ -34,6 +34,7 @@ func NewFramework() *Framework {
 	if err != nil {
 		log.Fatalf("Failed to create framework: %v", err)
 	}
+	f.scanPhase = newScanPhase()
 	Global = f
 
 	// This is required because controller-runtime expects its consumers to
