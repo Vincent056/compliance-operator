@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +31,68 @@ type TestPool struct {
 // NodeRoleSelector returns the node selector matching this lane's single node.
 func (p *TestPool) NodeRoleSelector() map[string]string {
 	return utils.GetNodeRoleSelector(p.Name)
+}
+
+// laneTestMinutes is how long each lane test takes (measured on a 4.21 GCP
+// cluster, 2026-10-06). When there are more lane tests than lanes, a free lane
+// goes to the longest waiting test first, so the slowest test doesn't start
+// last and stretch the run. Tests missing here count as 0 and run last.
+var laneTestMinutes = map[string]int{
+	"TestRuntimeSSHConfigWithRemediation": 15,
+	"TestUnapplyRemediation":              11,
+	"TestUpdateRemediation":               10,
+	"TestAutoRemediate":                   9,
+	"TestKubeletConfigRemediation":        7,
+}
+
+// laneQueue hands out lanes to waiting tests, longest test first.
+type laneQueue struct {
+	mu      sync.Mutex
+	free    []*TestPool
+	waiters []*laneWaiter
+	// ready is closed when the first lane is put, for finishTestPools.
+	ready     chan struct{}
+	readyOnce sync.Once
+}
+
+type laneWaiter struct {
+	minutes int
+	lane    chan *TestPool
+}
+
+func newLaneQueue() *laneQueue {
+	return &laneQueue{ready: make(chan struct{})}
+}
+
+// put makes lane p available: it goes straight to the longest waiting test, or
+// into the free list when nobody is waiting.
+func (q *laneQueue) put(p *TestPool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.readyOnce.Do(func() { close(q.ready) })
+	if len(q.waiters) == 0 {
+		q.free = append(q.free, p)
+		return
+	}
+	w := q.waiters[0]
+	q.waiters = q.waiters[1:]
+	w.lane <- p
+}
+
+// get returns a free lane right away, or queues the caller by test duration
+// and returns the channel its lane will arrive on.
+func (q *laneQueue) get(minutes int) (*TestPool, chan *TestPool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.free) > 0 {
+		p := q.free[0]
+		q.free = q.free[1:]
+		return p, nil
+	}
+	w := &laneWaiter{minutes: minutes, lane: make(chan *TestPool, 1)}
+	q.waiters = append(q.waiters, w)
+	sort.SliceStable(q.waiters, func(i, j int) bool { return q.waiters[i].minutes > q.waiters[j].minutes })
+	return nil, w.lane
 }
 
 // testPoolCount is the number of parallel destructive lanes to set up. It
@@ -58,7 +122,7 @@ func testPoolCount() int {
 func (f *Framework) startTestPools() error {
 	if f.Platform == "rosa" {
 		fmt.Printf("bypassing test pool setup because MachineConfigPools are not supported on %s\n", f.Platform)
-		f.TestPools = make(chan *TestPool, 1)
+		f.TestPools = newLaneQueue()
 		return nil
 	}
 
@@ -106,7 +170,7 @@ func (f *Framework) startTestPools() error {
 	// available instead of waiting for all of them. A lane's ScanSettings copy
 	// the operator's defaults, so they're created after finishTestPools reports
 	// the operator is up.
-	f.TestPools = make(chan *TestPool, n)
+	f.TestPools = newLaneQueue()
 	f.testPoolErrs = make(chan error, n)
 	f.operatorReady = make(chan struct{})
 	for i, name := range f.testPoolNames {
@@ -139,12 +203,12 @@ func (f *Framework) readyTestPool(i int, name, node string) {
 		f.testPoolErrs <- fmt.Errorf("failed to create scan settings for test pool %s: %w", name, err)
 		return
 	}
-	f.TestPools <- &TestPool{
+	f.TestPools.put(&TestPool{
 		Index:                i,
 		Name:                 name,
 		DefaultScanSetting:   name + "-default",
 		AutoApplyScanSetting: name + "-default-auto-apply",
-	}
+	})
 	log.Printf("test pool lane %d ready on node %s: %s (%s after creation)", i, node, name, time.Since(start).Round(time.Second))
 }
 
@@ -165,8 +229,7 @@ func (f *Framework) finishTestPools() error {
 		return nil
 	}
 	select {
-	case p := <-f.TestPools:
-		f.TestPools <- p
+	case <-f.TestPools.ready:
 		return nil
 	case err := <-f.testPoolErrs:
 		return err
@@ -175,15 +238,14 @@ func (f *Framework) finishTestPools() error {
 
 // AcquireTestPool checks out an isolated pool lane for a destructive test,
 // blocking until one is free, and returns it when the test ends. Call
-// t.Parallel() before this so lanes are shared across concurrent tests.
+// t.Parallel() before this so lanes are shared across concurrent tests. Waiting
+// tests get lanes longest first (laneTestMinutes).
 func (f *Framework) AcquireTestPool(t *testing.T) *TestPool {
 	t.Helper()
-	var p *TestPool
-	select {
-	case p = <-f.TestPools:
-	default:
+	p, wait := f.TestPools.get(laneTestMinutes[t.Name()])
+	if p == nil {
 		select {
-		case p = <-f.TestPools:
+		case p = <-wait:
 		case err := <-f.testPoolErrs:
 			f.testPoolErrs <- err // let other waiting tests see it too
 			t.Fatalf("no test pool lane available: %s", err)
@@ -191,7 +253,7 @@ func (f *Framework) AcquireTestPool(t *testing.T) *TestPool {
 	}
 	t.Logf("acquired test pool lane %s", p.Name)
 	t.Cleanup(func() {
-		f.TestPools <- p
+		f.TestPools.put(p)
 		t.Logf("released test pool lane %s", p.Name)
 	})
 	return p

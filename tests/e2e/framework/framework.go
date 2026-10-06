@@ -65,7 +65,7 @@ type Framework struct {
 	// TestPools hands out isolated MachineConfigPool lanes to destructive tests
 	// that run in parallel (see testpools.go). testPoolNames tracks the lanes
 	// created during setup so they can be cleaned up on teardown.
-	TestPools     chan *TestPool
+	TestPools     *laneQueue
 	testPoolNames []string
 	testPoolNodes []string
 	testPoolErrs  chan error
