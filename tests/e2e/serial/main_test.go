@@ -2335,9 +2335,10 @@ func TestScannerAndAPICollectorLimitsConfigurable(t *testing.T) {
 	defer f.Client.Delete(context.TODO(), &scanSetting)
 
 	// The limits don't depend on the profile: bind TailoredProfiles of the
-	// small E8 profiles (a platform and a node one), named after this test.
-	tpPlatform := f.ExtendingTailoredProfile(t, framework.GetObjNameFromTest(t)+"-ocp4-e8", "ocp4-e8")
-	tpNode := f.ExtendingTailoredProfile(t, framework.GetObjNameFromTest(t)+"-rhcos4-e8", "rhcos4-e8")
+	// small E8 profiles (a platform and a node one). The test's own name is
+	// too long to prefix them with, see ExtendingTailoredProfile.
+	tpPlatform := f.ExtendingTailoredProfile(t, "scan-limits-ocp4-e8", "ocp4-e8")
+	tpNode := f.ExtendingTailoredProfile(t, "scan-limits-rhcos4-e8", "rhcos4-e8")
 
 	bindingName := framework.GetObjNameFromTest(t) + "-binding"
 	scanSettingBinding := compv1alpha1.ScanSettingBinding{
@@ -2822,8 +2823,6 @@ func TestMustGatherImageWorksAsExpected(t *testing.T) {
 		"adm", "must-gather",
 		"--image=" + mustGatherImage,
 		"--dest-dir=" + mustGatherDir,
-		// keep the must-gather pod off the lane nodes other tests reboot
-		"--node-selector=node-role.kubernetes.io/" + f.WorkerScanRole() + "=",
 	})
 	if err != nil {
 		t.Fatalf("Failed to execute must-gather: %v\nOutput: %s", err, mustGatherOutput)

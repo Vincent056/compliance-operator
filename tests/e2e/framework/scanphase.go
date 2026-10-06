@@ -229,6 +229,13 @@ func (f *Framework) WorkerScanSetting(t *testing.T, name string, adjust ...func(
 // collide with the scans of another test that binds the same profile.
 func (f *Framework) ExtendingTailoredProfile(t *testing.T, name, extends string) *compv1alpha1.TailoredProfile {
 	t.Helper()
+	// A node profile's scans are named <name>-<role>, and the operator puts
+	// scan names in label values, which can be at most 63 characters long.
+	for _, role := range []string{"master", f.WorkerScanRole()} {
+		if scan := name + "-" + role; len(scan) > 63 {
+			t.Fatalf("TailoredProfile name %q is too long: scan %q would be over the 63-character label limit", name, scan)
+		}
+	}
 	tp := &compv1alpha1.TailoredProfile{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: f.OperatorNamespace},
 		Spec: compv1alpha1.TailoredProfileSpec{
