@@ -13,8 +13,13 @@ import (
 
 	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
 	configv1 "github.com/openshift/api/config/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // TestPool is one isolated MachineConfigPool "lane" that a destructive serial
@@ -38,10 +43,10 @@ func (p *TestPool) NodeRoleSelector() map[string]string {
 // goes to the longest waiting test first, so the slowest test doesn't start
 // last and stretch the run. Tests missing here count as 0 and run last.
 var laneTestMinutes = map[string]int{
-	"TestRuntimeSSHConfigWithRemediation": 15,
-	"TestUnapplyRemediation":              11,
-	"TestUpdateRemediation":               10,
-	"TestAutoRemediate":                   9,
+	"TestUpdateRemediation":               14,
+	"TestAutoRemediate":                   11,
+	"TestRuntimeSSHConfigWithRemediation": 9,
+	"TestUnapplyRemediation":              9,
 	"TestKubeletConfigRemediation":        7,
 }
 
@@ -137,33 +142,49 @@ func (f *Framework) startTestPools() error {
 	// to go instead of holding up the drain. When the masters are schedulable
 	// they take those pods, so every worker can be a lane. Lane scans only
 	// select their own lane role, so they never run on the masters.
+	spare := 1
+	if f.mastersSchedulable() {
+		spare = 0
+	}
 	maxLanes := len(nodes)
-	if maxLanes > 1 && !f.mastersSchedulable() {
-		maxLanes--
+	if maxLanes > 1 {
+		maxLanes -= spare
 	}
-	if n > maxLanes {
-		log.Printf("E2E_PARALLEL_POOLS=%d exceeds the %d worker nodes available for lanes (one of %d stays free for evicted pods); capping to %d", n, maxLanes, len(nodes), maxLanes)
-		n = maxLanes
+	// With E2E_SCALE_WORKERS=true, add the workers the lanes are missing. The
+	// new nodes take minutes to join, so tests start on the lanes the existing
+	// workers give and each new node becomes a lane once it's ready.
+	added := 0
+	if n > 1 && n+spare > len(nodes) && os.Getenv("E2E_SCALE_WORKERS") == "true" {
+		added, err = f.scaleUpWorkers(n + spare - len(nodes))
+		if err != nil {
+			log.Printf("couldn't add workers for the test pool lanes, using the %d there are: %s", len(nodes), err)
+		}
 	}
-	if n < 1 {
+	target := n
+	if n > maxLanes+added {
+		target = maxLanes + added
+		log.Printf("E2E_PARALLEL_POOLS=%d exceeds the %d worker nodes available for lanes (%d of %d stay free for evicted pods); capping to %d", n, target, spare, len(nodes)+added, target)
+	}
+	if target < 1 {
 		return fmt.Errorf("no worker nodes available to create test pools")
+	}
+	now := target
+	if now > maxLanes {
+		now = maxLanes
 	}
 
 	f.testPoolNames = nil
-	f.testPoolNodes = nil
-	for i := 0; i < n; i++ {
+	for i := 0; i < target; i++ {
 		name := fmt.Sprintf("%s-%d", TestPoolName, i)
-		if n == 1 {
+		if target == 1 {
 			// Preserve the historical single-pool name "e2e" (and "e2e-default"
 			// ScanSettings) when not sharding, so suites that share SetUp but
 			// don't run in parallel behave exactly as before.
 			name = TestPoolName
 		}
-		if err := f.createMachineConfigPoolForNode(name, &nodes[i]); err != nil {
-			return fmt.Errorf("failed to create test pool %s: %w", name, err)
-		}
+		// Lanes for nodes that are still joining are named now, so teardown
+		// knows them; their ScanSettings just won't exist if a node never joins.
 		f.testPoolNames = append(f.testPoolNames, name)
-		f.testPoolNodes = append(f.testPoolNodes, nodes[i].Name)
 	}
 
 	// Hand each lane out as soon as it's ready, so tests start once any lane is
@@ -171,12 +192,131 @@ func (f *Framework) startTestPools() error {
 	// the operator's defaults, so they're created after finishTestPools reports
 	// the operator is up.
 	f.TestPools = newLaneQueue()
-	f.testPoolErrs = make(chan error, n)
+	f.testPoolErrs = make(chan error, target)
 	f.operatorReady = make(chan struct{})
-	for i, name := range f.testPoolNames {
-		go f.readyTestPool(i, name, f.testPoolNodes[i])
+	known := map[string]bool{}
+	for i := range nodes {
+		known[nodes[i].Name] = true
+	}
+	for i := 0; i < now; i++ {
+		if err := f.createMachineConfigPoolForNode(f.testPoolNames[i], &nodes[i]); err != nil {
+			return fmt.Errorf("failed to create test pool %s: %w", f.testPoolNames[i], err)
+		}
+		go f.readyTestPool(i, f.testPoolNames[i], nodes[i].Name)
+	}
+	if now < target {
+		go f.addLanesForNewWorkers(now, target, known)
 	}
 	return nil
+}
+
+// workerMachineSetGVK is the Machine API MachineSet, handled as unstructured
+// so the framework scheme doesn't need the Machine API types.
+var workerMachineSetGVK = schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+
+// scaleUpWorkers adds count worker Machines, one at a time to the worker
+// MachineSet with the fewest replicas so they spread across zones, and returns
+// how many it added. The cluster is not scaled back down: CI clusters are
+// thrown away after the run, like the lane pools.
+func (f *Framework) scaleUpWorkers(count int) (int, error) {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(workerMachineSetGVK.GroupVersion().WithKind("MachineSetList"))
+	if err := f.Client.List(context.TODO(), list, dynclient.InNamespace("openshift-machine-api")); err != nil {
+		return 0, fmt.Errorf("listing MachineSets: %w", err)
+	}
+	type ms struct {
+		name     string
+		from, to int64
+	}
+	var sets []*ms
+	for _, m := range list.Items {
+		role, _, _ := unstructured.NestedString(m.Object, "spec", "template", "metadata", "labels", "machine.openshift.io/cluster-api-machine-role")
+		if role != "worker" {
+			continue
+		}
+		r, found, _ := unstructured.NestedInt64(m.Object, "spec", "replicas")
+		if !found {
+			r = 1
+		}
+		sets = append(sets, &ms{name: m.GetName(), from: r, to: r})
+	}
+	if len(sets) == 0 {
+		return 0, fmt.Errorf("no worker MachineSets to scale")
+	}
+	for i := 0; i < count; i++ {
+		sort.SliceStable(sets, func(a, b int) bool { return sets[a].to < sets[b].to })
+		sets[0].to++
+	}
+	added := 0
+	for _, m := range sets {
+		if m.to == m.from {
+			continue
+		}
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(workerMachineSetGVK)
+		obj.SetNamespace("openshift-machine-api")
+		obj.SetName(m.name)
+		patch := []byte(fmt.Sprintf(`{"spec":{"replicas":%d}}`, m.to))
+		if err := f.Client.Patch(context.TODO(), obj, dynclient.RawPatch(types.MergePatchType, patch)); err != nil {
+			return added, fmt.Errorf("scaling MachineSet %s to %d: %w", m.name, m.to, err)
+		}
+		log.Printf("scaled worker MachineSet %s from %d to %d replicas for the test pool lanes", m.name, m.from, m.to)
+		added += int(m.to - m.from)
+	}
+	return added, nil
+}
+
+// addLanesForNewWorkers turns workers that join after SetUp started into
+// lanes from+1..target. A node becomes a lane once it's Ready and the MCO has
+// finished its first config.
+func (f *Framework) addLanesForNewWorkers(from, target int, known map[string]bool) {
+	start := time.Now()
+	next := from
+	err := wait.PollImmediate(15*time.Second, workerJoinTimeout, func() (bool, error) {
+		nodes, err := f.getWorkerNodes()
+		if err != nil {
+			log.Printf("listing workers for new test pool lanes: %s", err)
+			return false, nil
+		}
+		for i := range nodes {
+			node := &nodes[i]
+			if next == target {
+				break
+			}
+			if known[node.Name] || !nodeReadyAndConfigured(node) {
+				continue
+			}
+			known[node.Name] = true
+			name := f.testPoolNames[next]
+			log.Printf("worker %s joined after %s, making it test pool lane %d (%s)", node.Name, time.Since(start).Round(time.Second), next, name)
+			if err := f.createMachineConfigPoolForNode(name, node); err != nil {
+				log.Printf("couldn't create test pool %s on %s, tests use the other lanes: %s", name, node.Name, err)
+				continue
+			}
+			go f.readyTestPool(next, name, node.Name)
+			next++
+		}
+		return next == target, nil
+	})
+	if err != nil {
+		log.Printf("only %d of %d test pool lanes were created after %s; tests use those: %s", next, target, workerJoinTimeout, err)
+	}
+}
+
+// workerJoinTimeout bounds how long new workers get to join and become lanes.
+const workerJoinTimeout = 20 * time.Minute
+
+func nodeReadyAndConfigured(n *corev1.Node) bool {
+	ready := false
+	for _, c := range n.Status.Conditions {
+		if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+			ready = true
+		}
+	}
+	a := n.GetAnnotations()
+	return ready && a["machineconfiguration.openshift.io/state"] == "Done" &&
+		a["machineconfiguration.openshift.io/currentConfig"] != "" &&
+		a["machineconfiguration.openshift.io/currentConfig"] == a["machineconfiguration.openshift.io/desiredConfig"]
 }
 
 // mastersSchedulable reports whether the cluster scheduler lets ordinary pods

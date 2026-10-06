@@ -67,7 +67,6 @@ type Framework struct {
 	// created during setup so they can be cleaned up on teardown.
 	TestPools     *laneQueue
 	testPoolNames []string
-	testPoolNodes []string
 	testPoolErrs  chan error
 	operatorReady chan struct{}
 	// pinOperatorToMasters places the operator Deployment on master nodes, as the

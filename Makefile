@@ -662,12 +662,16 @@ e2e-deployment: e2e-set-image prep-e2e ## Run operator deployment end-to-end tes
 
 .PHONY: e2e-serial
 # Number of isolated MachineConfigPool lanes the destructive/reboot tests run
-# across in parallel (one worker node per lane). Capped at the worker count,
-# minus one unless the masters are schedulable: that worker stays out of the
-# lanes so pods evicted during lane reboots have somewhere to go.
-E2E_PARALLEL_POOLS?=6
+# across in parallel (one worker node per lane, one lane per lane test). Capped
+# at the worker count, minus one unless the masters are schedulable: that
+# worker stays out of the lanes so pods evicted during lane reboots have
+# somewhere to go. With E2E_SCALE_WORKERS=true the worker MachineSets are scaled
+# up to cover the lanes plus that spare (6 workers for 5 lanes); tests start on
+# the existing workers and new ones become lanes as they join.
+E2E_PARALLEL_POOLS?=5
+E2E_SCALE_WORKERS?=true
 e2e-serial: e2e-set-image prep-e2e ## Run destructive end-to-end tests, sharded across E2E_PARALLEL_POOLS pools in parallel.
-	@LOG_CONTAINER_OUTPUT=1 CONTENT_IMAGE=$(E2E_CONTENT_IMAGE_PATH) BROKEN_CONTENT_IMAGE=$(E2E_BROKEN_CONTENT_IMAGE_PATH) E2E_PARALLEL_POOLS=$(E2E_PARALLEL_POOLS) $(GO) test ./tests/e2e/serial $(E2E_GO_TEST_FLAGS) -parallel $(E2E_PARALLEL_POOLS) -args $(E2E_ARGS) | tee tests/e2e-serial.log
+	@LOG_CONTAINER_OUTPUT=1 CONTENT_IMAGE=$(E2E_CONTENT_IMAGE_PATH) BROKEN_CONTENT_IMAGE=$(E2E_BROKEN_CONTENT_IMAGE_PATH) E2E_PARALLEL_POOLS=$(E2E_PARALLEL_POOLS) E2E_SCALE_WORKERS=$(E2E_SCALE_WORKERS) $(GO) test ./tests/e2e/serial $(E2E_GO_TEST_FLAGS) -parallel $(E2E_PARALLEL_POOLS) -args $(E2E_ARGS) | tee tests/e2e-serial.log
 
 .PHONY: e2e-tailoring
 e2e-tailoring: e2e-set-image prep-e2e ## Run profile tailoring end-to-end tests.
