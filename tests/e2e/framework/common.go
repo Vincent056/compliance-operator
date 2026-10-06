@@ -3456,8 +3456,55 @@ func (f *Framework) WaitForGenericRemediationToBeAutoApplied(remName, remNamespa
 // the nodes in pool, so other lanes rebooting don't hold it up.
 func (f *Framework) WaitForGenericRemediationToBeAutoAppliedInPool(remName, remNamespace, pool string) error {
 	return f.waitForGenericRemediationToBeAutoApplied(remName, remNamespace, func() error {
-		return f.WaitForNodesToBeReadyInPool(pool)
+		// Applied only means the operator created the MachineConfig or
+		// KubeletConfig. Until MCO renders it into the pool, the pool's nodes
+		// still look up to date, so wait for the pool to roll out a config
+		// that includes it.
+		rem := &compv1alpha1.ComplianceRemediation{}
+		if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: remName, Namespace: remNamespace}, rem); err != nil {
+			return err
+		}
+		mc := rem.GetMcName()
+		if obj := rem.Spec.Current.Object; obj != nil && obj.GetKind() == "KubeletConfig" {
+			mc = "99-" + pool + "-generated-kubelet"
+		}
+		return f.waitForPoolToRollOut(pool, mc)
 	})
+}
+
+// waitForPoolToRollOut waits until the pool's target rendered config includes
+// a MachineConfig whose name starts with mcPrefix and every node in the pool
+// runs it.
+func (f *Framework) waitForPoolToRollOut(pool, mcPrefix string) error {
+	start := time.Now()
+	err := wait.PollImmediate(machineOperationRetryInterval, machineOperationTimeout, func() (bool, error) {
+		mcp := &mcfgv1.MachineConfigPool{}
+		if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: pool}, mcp); err != nil {
+			log.Printf("failed to get pool %s: %s", pool, err)
+			return false, nil
+		}
+		rendered := false
+		for _, src := range mcp.Spec.Configuration.Source {
+			if strings.HasPrefix(src.Name, mcPrefix) {
+				rendered = true
+				break
+			}
+		}
+		if !rendered {
+			log.Printf("pool %s doesn't include %s yet", pool, mcPrefix)
+			return false, nil
+		}
+		if mcp.Status.Configuration.Name != mcp.Spec.Configuration.Name || mcp.Status.UpdatedMachineCount != mcp.Status.MachineCount {
+			log.Printf("pool %s is rolling out %s (%d/%d nodes)", pool, mcp.Spec.Configuration.Name, mcp.Status.UpdatedMachineCount, mcp.Status.MachineCount)
+			return false, nil
+		}
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("pool %s did not roll out %s: %w", pool, mcPrefix, err)
+	}
+	log.Printf("pool %s rolled out %s after %s", pool, mcPrefix, time.Since(start).Round(time.Second))
+	return f.WaitForNodesToBeReadyInPool(pool)
 }
 
 func (f *Framework) waitForGenericRemediationToBeAutoApplied(remName, remNamespace string, waitForNodes func() error) error {
