@@ -3192,7 +3192,7 @@ func (f *Framework) RemoveObsoleteRemediationAndCheck(namespace, name, renderedM
 	// Get the MachineConfigPool before the remediation has been made current
 	// This way, we can check that it changed without race-conditions
 	poolBeforeRemediation := &mcfgv1.MachineConfigPool{}
-	err = f.Client.Get(context.TODO(), types.NamespacedName{Name: TestPoolName}, poolBeforeRemediation)
+	err = f.Client.Get(context.TODO(), types.NamespacedName{Name: pool}, poolBeforeRemediation)
 	if err != nil {
 		return err
 	}
