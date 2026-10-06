@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
 )
@@ -41,16 +42,20 @@ func testPoolCount() int {
 	return 1
 }
 
-// setUpTestPools carves one MachineConfigPool lane per worker node (up to
-// testPoolCount) and creates a matching pair of ScanSettings for each. Lanes are
-// handed to tests via AcquireTestPool. We reuse the existing worker nodes rather
-// than scaling the cluster; when every worker becomes a lane the operator still
-// runs (nodes keep their worker label) but has no idle worker to fall back to
-// during simultaneous reboots.
-func (f *Framework) setUpTestPools() error {
+// startTestPools carves one MachineConfigPool lane per worker node (up to
+// testPoolCount). It labels the lane nodes and creates all the pools up front,
+// then waits for MCO to roll the nodes into them in the background: MCO updates
+// distinct pools concurrently, so the whole set takes about as long as one pool.
+// SetUp calls this before deploying the operator so the wait overlaps with the
+// deployment and ProfileBundle parsing; finishTestPools joins it. We reuse the
+// existing worker nodes rather than scaling the cluster; when every worker
+// becomes a lane the operator still runs (nodes keep their worker label) but has
+// no idle worker to fall back to during simultaneous reboots.
+func (f *Framework) startTestPools() error {
+	f.testPoolsReady = make(chan error, 1)
 	if f.Platform == "rosa" {
 		fmt.Printf("bypassing test pool setup because MachineConfigPools are not supported on %s\n", f.Platform)
-		f.TestPools = make(chan *TestPool, 1)
+		f.testPoolsReady <- nil
 		return nil
 	}
 
@@ -68,8 +73,8 @@ func (f *Framework) setUpTestPools() error {
 		return fmt.Errorf("no worker nodes available to create test pools")
 	}
 
-	f.TestPools = make(chan *TestPool, n)
 	f.testPoolNames = nil
+	f.testPoolNodes = nil
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("%s-%d", TestPoolName, i)
 		if n == 1 {
@@ -78,21 +83,56 @@ func (f *Framework) setUpTestPools() error {
 			// don't run in parallel behave exactly as before.
 			name = TestPoolName
 		}
-		node := &nodes[i]
-		if err := f.createMachineConfigPoolFromNode(name, node); err != nil {
+		if err := f.createMachineConfigPoolForNode(name, &nodes[i]); err != nil {
 			return fmt.Errorf("failed to create test pool %s: %w", name, err)
 		}
+		f.testPoolNames = append(f.testPoolNames, name)
+		f.testPoolNodes = append(f.testPoolNodes, nodes[i].Name)
+	}
+
+	names := append([]string(nil), f.testPoolNames...)
+	go func() {
+		start := time.Now()
+		for _, name := range names {
+			if err := f.waitForMachineConfigPoolUpdated(name); err != nil {
+				f.testPoolsReady <- fmt.Errorf("failed to create test pool %s: %w", name, err)
+				return
+			}
+		}
+		log.Printf("all %d test pool lanes updated %s after creation", len(names), time.Since(start).Round(time.Second))
+		f.testPoolsReady <- nil
+	}()
+	return nil
+}
+
+// finishTestPools waits for the lane pools started by startTestPools, then
+// creates each lane's ScanSettings and hands the lanes out via TestPools. The
+// ScanSettings are copies of the operator's defaults, so this has to run after
+// the operator is up.
+func (f *Framework) finishTestPools() error {
+	if f.testPoolsReady == nil {
+		return fmt.Errorf("finishTestPools called before startTestPools")
+	}
+	if err := <-f.testPoolsReady; err != nil {
+		return err
+	}
+	if f.Platform == "rosa" {
+		f.TestPools = make(chan *TestPool, 1)
+		return nil
+	}
+
+	f.TestPools = make(chan *TestPool, len(f.testPoolNames))
+	for i, name := range f.testPoolNames {
 		if err := f.ensureE2EScanSettingsForPool(name); err != nil {
 			return fmt.Errorf("failed to create scan settings for test pool %s: %w", name, err)
 		}
-		f.testPoolNames = append(f.testPoolNames, name)
 		f.TestPools <- &TestPool{
 			Index:                i,
 			Name:                 name,
 			DefaultScanSetting:   name + "-default",
 			AutoApplyScanSetting: name + "-default-auto-apply",
 		}
-		log.Printf("test pool lane %d ready on node %s: %s", i, node.Name, name)
+		log.Printf("test pool lane %d ready on node %s: %s", i, f.testPoolNodes[i], name)
 	}
 	return nil
 }

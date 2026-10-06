@@ -781,36 +781,35 @@ func (f *Framework) createMachineConfigPool(n string) error {
 }
 
 // createMachineConfigPoolFromNode creates a MachineConfigPool named n containing
-// exactly the given node (relabeled into the pool's role). This lets several
-// isolated pools be created from distinct worker nodes so destructive tests can
-// run in parallel, one node per pool.
+// exactly the given node (relabeled into the pool's role) and waits for MCO to
+// roll the node into it. This lets several isolated pools be created from
+// distinct worker nodes so destructive tests can run in parallel, one node per
+// pool.
 func (f *Framework) createMachineConfigPoolFromNode(n string, node *corev1.Node) error {
 	if f.Platform == "rosa" {
 		fmt.Printf("bypassing MachineConfigPool test setup because it's not supported on %s\n", f.Platform)
 		return nil
 	}
+	if err := f.createMachineConfigPoolForNode(n, node); err != nil {
+		return err
+	}
+	return f.waitForMachineConfigPoolUpdated(n)
+}
+
+// createMachineConfigPoolForNode labels the node into pool n's role and creates
+// the pool without waiting for MCO to roll the node into it. Callers creating
+// several pools can create them all first and wait afterwards, since MCO updates
+// distinct pools concurrently.
+func (f *Framework) createMachineConfigPoolForNode(n string, node *corev1.Node) error {
 	// the base pool the sub-pool inherits MachineConfigs from
 	w := "worker"
 
 	// create a new pool with a subset of the nodes
 	l := fmt.Sprintf("node-role.kubernetes.io/%s", n)
 
-	// label nodes
-	nodeCopy := node.DeepCopy()
-	nodeCopy.Labels[l] = ""
-
 	log.Printf("adding label %s to node %s\n", l, node.Name)
-	updateErr := backoff.RetryNotify(
-		func() error {
-			return f.Client.Update(context.TODO(), nodeCopy)
-		},
-		defaultBackoff,
-		func(err error, interval time.Duration) {
-			log.Printf("failed to label node %s: %s... retrying after %s", node.Name, err, interval)
-		})
-	if updateErr != nil {
-		log.Printf("failed to label node %s: %s\n", node.Name, l)
-		return fmt.Errorf("couldn't label node %s: %w", node.Name, updateErr)
+	if err := f.labelNode(node.Name, l); err != nil {
+		return fmt.Errorf("couldn't label node %s: %w", node.Name, err)
 	}
 
 	nodeLabel := make(map[string]string)
@@ -853,7 +852,11 @@ func (f *Framework) createMachineConfigPoolFromNode(n string, node *corev1.Node)
 		return fmt.Errorf("failed to create Machine Config Pool %s: %w", n, createErr)
 	}
 
-	// wait for pool to come up
+	return nil
+}
+
+// waitForMachineConfigPoolUpdated waits until MachineConfigPool n reports Updated.
+func (f *Framework) waitForMachineConfigPoolUpdated(n string) error {
 	err := wait.PollImmediate(machineOperationRetryInterval, machineOperationTimeout, func() (bool, error) {
 		pool := mcfgv1.MachineConfigPool{}
 		err := f.Client.Get(context.TODO(), types.NamespacedName{Name: n}, &pool)
@@ -879,6 +882,31 @@ func (f *Framework) createMachineConfigPoolFromNode(n string, node *corev1.Node)
 
 	log.Printf("successfully created Machine Config Pool %s\n", n)
 	return nil
+}
+
+// labelNode adds label, with an empty value, to the named node using a JSON
+// merge patch. A patch carries no resourceVersion, so unlike an Update of a
+// previously listed copy of the node it can't fail with a conflict when
+// something else (kubelet status updates, MCO annotations) has written the node
+// in the meantime.
+func (f *Framework) labelNode(nodeName, label string) error {
+	patch, err := json.Marshal(map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]string{label: ""},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return backoff.RetryNotify(
+		func() error {
+			_, err := f.KubeClient.CoreV1().Nodes().Patch(context.TODO(), nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
+			return err
+		},
+		defaultBackoff,
+		func(err error, interval time.Duration) {
+			log.Printf("failed to label node %s: %s... retrying after %s", nodeName, err, interval)
+		})
 }
 
 // validatingAdmissionPolicyExists checks if a ValidatingAdmissionPolicy with the given name exists

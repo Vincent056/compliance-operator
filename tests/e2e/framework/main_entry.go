@@ -79,6 +79,16 @@ func (f *Framework) SetUp() error {
 		return err
 	}
 
+	// Start creating the MachineConfigPool lanes now. MCO takes about 30s to roll
+	// a node into each new pool and that doesn't depend on the operator, so it
+	// overlaps with the operator deployment and ProfileBundle parsing below.
+	// finishTestPools joins it once the operator is up. See testpools.go.
+	if os.Getenv("SKIP_MCP_SETUP") == "" {
+		if err := f.startTestPools(); err != nil {
+			return fmt.Errorf("failed to set up test pools: %w", err)
+		}
+	}
+
 	err = f.replaceNamespaceFromManifest()
 	if err != nil {
 		return err
@@ -121,10 +131,10 @@ func (f *Framework) SetUp() error {
 		return fmt.Errorf("failed to set scan setting bindings to debug: %w", err)
 	}
 
-	// Create one isolated MachineConfigPool lane per worker node (plus matching
-	// ScanSettings) so the destructive/reboot tests can run in parallel, each
+	// Wait for the MachineConfigPool lanes started above and create their
+	// ScanSettings, so the destructive/reboot tests can run in parallel, each
 	// against its own pool and node. See testpools.go.
-	err = f.setUpTestPools()
+	err = f.finishTestPools()
 	if err != nil {
 		return fmt.Errorf("failed to set up test pools: %w", err)
 	}
