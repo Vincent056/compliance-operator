@@ -258,10 +258,16 @@ func (f *Framework) createFromYAMLString(y string) error {
 		if err != nil {
 			return err
 		}
-		if u, ok := obj.(*unstructured.Unstructured); ok && f.pinOperatorToMasters &&
-			u.GetKind() == "Deployment" && u.GetName() == "compliance-operator" {
-			if err := pinToMasters(u); err != nil {
-				return fmt.Errorf("failed to pin the operator to master nodes: %w", err)
+		if u, ok := obj.(*unstructured.Unstructured); ok && u.GetKind() == "Deployment" && u.GetName() == "compliance-operator" {
+			switch {
+			case f.haveSpares:
+				if err := pinToSpares(u); err != nil {
+					return fmt.Errorf("failed to pin the operator to the spare workers: %w", err)
+				}
+			case f.pinOperatorToMasters:
+				if err := pinToMasters(u); err != nil {
+					return fmt.Errorf("failed to pin the operator to master nodes: %w", err)
+				}
 			}
 		}
 
@@ -273,6 +279,17 @@ func (f *Framework) createFromYAMLString(y string) error {
 		}
 	}
 	return nil
+}
+
+// pinToSpares schedules the operator Deployment on the spare workers. Like the
+// masters they never reboot during the run, and the pods the operator starts
+// for scans (aggregators, platform scans, result servers, profile parsers)
+// inherit its node selector. On the spare workers they don't compete with the
+// control plane, which also runs every master-role scan; with many scan tests
+// in parallel the masters otherwise run out of CPU.
+func pinToSpares(u *unstructured.Unstructured) error {
+	return unstructured.SetNestedStringMap(u.Object, utils.GetNodeRoleSelector(SpareRole),
+		"spec", "template", "spec", "nodeSelector")
 }
 
 // pinToMasters schedules the operator Deployment on the control plane, the same
