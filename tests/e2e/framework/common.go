@@ -41,6 +41,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	psapi "k8s.io/pod-security-admission/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -257,6 +258,12 @@ func (f *Framework) createFromYAMLString(y string) error {
 		if err != nil {
 			return err
 		}
+		if u, ok := obj.(*unstructured.Unstructured); ok && f.pinOperatorToMasters &&
+			u.GetKind() == "Deployment" && u.GetName() == "compliance-operator" {
+			if err := pinToMasters(u); err != nil {
+				return fmt.Errorf("failed to pin the operator to master nodes: %w", err)
+			}
+		}
 
 		obj.SetNamespace(f.OperatorNamespace)
 		log.Printf("creating %s %s", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
@@ -266,6 +273,33 @@ func (f *Framework) createFromYAMLString(y string) error {
 		}
 	}
 	return nil
+}
+
+// pinToMasters schedules the operator Deployment on the control plane, the same
+// way the OLM bundle (CSV) installs it. The e2e manifests leave it unconstrained,
+// so it lands on a worker and is evicted, restarting the operator mid-test,
+// whenever a destructive test reboots that worker.
+func pinToMasters(u *unstructured.Unstructured) error {
+	if err := unstructured.SetNestedStringMap(u.Object, map[string]string{"node-role.kubernetes.io/master": ""},
+		"spec", "template", "spec", "nodeSelector"); err != nil {
+		return err
+	}
+	return unstructured.SetNestedSlice(u.Object, []interface{}{
+		map[string]interface{}{"key": "node-role.kubernetes.io/master", "operator": "Exists", "effect": "NoSchedule"},
+	}, "spec", "template", "spec", "tolerations")
+}
+
+// shouldPinOperatorToMasters reports whether the cluster has master nodes to pin
+// the operator to. ROSA and other hosted control planes have none.
+func (f *Framework) shouldPinOperatorToMasters() (bool, error) {
+	if f.Platform == "rosa" {
+		return false, nil
+	}
+	nodes, err := f.KubeClient.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: "node-role.kubernetes.io/master"})
+	if err != nil {
+		return false, fmt.Errorf("failed to list master nodes: %w", err)
+	}
+	return len(nodes.Items) > 0, nil
 }
 
 func (f *Framework) WaitForScanCleanup() error {
@@ -761,7 +795,19 @@ func (f *Framework) getWorkerNodes() ([]corev1.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return nodeList.Items, nil
+	// Never hand out a control-plane node as a reboot lane. Masters carry the
+	// worker role too on compact clusters or when masters are schedulable.
+	var workers []corev1.Node
+	for _, n := range nodeList.Items {
+		if _, ok := n.Labels["node-role.kubernetes.io/master"]; ok {
+			continue
+		}
+		if _, ok := n.Labels["node-role.kubernetes.io/control-plane"]; ok {
+			continue
+		}
+		workers = append(workers, n)
+	}
+	return workers, nil
 }
 
 func (f *Framework) createMachineConfigPool(n string) error {
@@ -1912,6 +1958,81 @@ func (f *Framework) WaitForSuiteScansCleanup(suiteOrBindingName, namespace strin
 	})
 }
 
+// DisableSuiteAutoApply turns off automatic remediation on a ComplianceSuite,
+// so remediations a test unapplies aren't immediately re-applied by the suite
+// controller.
+func (f *Framework) DisableSuiteAutoApply(name, namespace string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		suite := &compv1alpha1.ComplianceSuite{}
+		if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: namespace}, suite); err != nil {
+			return err
+		}
+		if !suite.Spec.AutoApplyRemediations {
+			return nil
+		}
+		suite.Spec.AutoApplyRemediations = false
+		return f.Client.Update(context.TODO(), suite)
+	})
+}
+
+// WaitForRemediationToBeDeleted waits until the ComplianceRemediation is gone,
+// for example after its ScanSettingBinding was deleted.
+func (f *Framework) WaitForRemediationToBeDeleted(name, namespace string) error {
+	err := wait.PollImmediate(RetryInterval, Timeout, func() (bool, error) {
+		rem := &compv1alpha1.ComplianceRemediation{}
+		err := f.Client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: namespace}, rem)
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		if err != nil {
+			log.Printf("failed to get remediation %s: %s", name, err)
+		}
+		return false, nil
+	})
+	if err != nil {
+		return fmt.Errorf("remediation %s/%s was not deleted: %w", namespace, name, err)
+	}
+	return nil
+}
+
+// DeleteKubeletConfigAndWaitForPool deletes the KubeletConfig the remediation
+// controller creates for pool (compliance-operator-kubelet-<pool>) and waits
+// for the pool to roll out the rendered config without it.
+func (f *Framework) DeleteKubeletConfigAndWaitForPool(pool string) error {
+	mcp := &mcfgv1.MachineConfigPool{}
+	if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: pool}, mcp); err != nil {
+		return err
+	}
+	before := mcp.Spec.Configuration.Name
+	kc := &mcfgv1.KubeletConfig{}
+	kc.SetName("compliance-operator-kubelet-" + pool)
+	if err := f.Client.Delete(context.TODO(), kc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	err := wait.PollImmediate(machineOperationRetryInterval, machineOperationTimeout, func() (bool, error) {
+		if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: pool}, mcp); err != nil {
+			return false, nil
+		}
+		if mcp.Spec.Configuration.Name == before || mcp.Status.Configuration.Name != mcp.Spec.Configuration.Name {
+			return false, nil
+		}
+		for _, c := range mcp.Status.Conditions {
+			if c.Type == mcfgv1.MachineConfigPoolUpdated && c.Status == core.ConditionTrue {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		return fmt.Errorf("pool %s did not roll out after removing its KubeletConfig: %w", pool, err)
+	}
+	log.Printf("pool %s rolled back to %s after removing its KubeletConfig", pool, mcp.Status.Configuration.Name)
+	return f.WaitForNodesToBeReadyInPool(pool)
+}
+
 // DeleteScanSettingBindingAndWaitForCleanup deletes the given ScanSettingBinding and waits for all ComplianceScans
 // belonging to that binding (same name as the suite) to be removed.
 func (f *Framework) DeleteScanSettingBindingAndWaitForCleanup(ssb *compv1alpha1.ScanSettingBinding) error {
@@ -2730,7 +2851,7 @@ func (f *Framework) WaitForRemediationToBeAutoApplied(remName, remNamespace stri
 	}
 
 	log.Printf("machines updated with remediation")
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		return err
 	}
@@ -2811,6 +2932,38 @@ func (f *Framework) WaitForMachinePoolUpdate(name string, action machineConfigAc
 
 // waitForNodesToBeReady waits until all the nodes in the cluster have
 // reached the expected machineConfig.
+// WaitForNodesToBeReadyInPool waits until every node in MachineConfigPool pool
+// runs its desired config. Unlike WaitForNodesToBeReady it ignores nodes in other
+// pools, so a destructive test running in one lane doesn't block on another
+// lane's reboot.
+func (f *Framework) WaitForNodesToBeReadyInPool(pool string) error {
+	selector := dynclient.MatchingLabels{fmt.Sprintf("node-role.kubernetes.io/%s", pool): ""}
+	err := wait.PollImmediate(machineOperationRetryInterval, machineOperationTimeout, func() (bool, error) {
+		var nodes core.NodeList
+		if err := f.Client.List(context.TODO(), &nodes, selector); err != nil {
+			log.Printf("failed to list nodes in pool %s: %s", pool, err)
+			return false, nil
+		}
+		if len(nodes.Items) == 0 {
+			log.Printf("no nodes found in pool %s yet", pool)
+			return false, nil
+		}
+		for _, node := range nodes.Items {
+			if (node.Annotations["machineconfiguration.openshift.io/currentConfig"] != node.Annotations["machineconfiguration.openshift.io/desiredConfig"]) ||
+				(node.Annotations["machineconfiguration.openshift.io/state"] != "Done") {
+				log.Printf("node %s in pool %s still updating (state %s)", node.Name, pool, node.Annotations["machineconfiguration.openshift.io/state"])
+				return false, nil
+			}
+		}
+		log.Printf("all machines in pool %s updated", pool)
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed waiting for nodes in pool %s to be ready: %s", pool, err)
+	}
+	return nil
+}
+
 func (f *Framework) WaitForNodesToBeReady() error {
 	err := wait.PollImmediate(machineOperationRetryInterval, machineOperationTimeout, func() (bool, error) {
 		var nodes core.NodeList

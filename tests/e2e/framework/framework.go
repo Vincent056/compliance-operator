@@ -65,10 +65,14 @@ type Framework struct {
 	// TestPools hands out isolated MachineConfigPool lanes to destructive tests
 	// that run in parallel (see testpools.go). testPoolNames tracks the lanes
 	// created during setup so they can be cleaned up on teardown.
-	TestPools      chan *TestPool
-	testPoolNames  []string
-	testPoolNodes  []string
-	testPoolsReady chan error
+	TestPools     chan *TestPool
+	testPoolNames []string
+	testPoolNodes []string
+	testPoolErrs  chan error
+	operatorReady chan struct{}
+	// pinOperatorToMasters places the operator Deployment on master nodes, as the
+	// CSV does, so worker reboots in destructive tests don't restart it.
+	pinOperatorToMasters bool
 
 	restMapper *restmapper.DeferredDiscoveryRESTMapper
 

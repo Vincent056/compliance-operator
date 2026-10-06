@@ -757,9 +757,21 @@ func TestAutoRemediate(t *testing.T) {
 	t.Parallel()
 	f := framework.Global
 	pool := f.AcquireTestPool(t)
-	// FIXME, maybe have a func that returns a struct with suite name and scan names?
-	suiteName := "test-remediate"
+	// Name everything after the test so CRs can't collide with other tests
+	// running in parallel lanes.
+	suiteName := framework.GetObjNameFromTest(t)
 	scanName := fmt.Sprintf("%s-%s", suiteName, pool.Name)
+
+	// Use a ProfileBundle of its own rather than the shared rhcos4 one, so
+	// concurrent lanes never share content objects.
+	pb, pbErr := f.CreateProfileBundle(suiteName, contentImagePath, framework.RhcosContentFile)
+	if pbErr != nil {
+		t.Fatalf("failed to create ProfileBundle %s: %s", suiteName, pbErr)
+	}
+	defer f.Client.Delete(context.TODO(), pb)
+	if err := f.WaitForProfileBundleStatus(suiteName, compv1alpha1.DataStreamValid); err != nil {
+		t.Fatal(err)
+	}
 
 	tp := &compv1alpha1.TailoredProfile{
 		ObjectMeta: metav1.ObjectMeta{
@@ -774,7 +786,7 @@ func TestAutoRemediate(t *testing.T) {
 			Description: "A test tailored profile to auto remediate",
 			EnableRules: []compv1alpha1.RuleReferenceSpec{
 				{
-					Name:      "rhcos4-no-direct-root-logins",
+					Name:      fmt.Sprintf("%s-no-direct-root-logins", suiteName),
 					Rationale: "To be tested",
 				},
 			},
@@ -878,12 +890,22 @@ func TestAutoRemediate(t *testing.T) {
 	}
 
 	// The test should not leave junk around, let's remove the MC and wait
-	// for the nodes to stabilize again
+	// for the nodes to stabilize again. Delete the auto-apply binding and wait
+	// for its remediation to go away first: while the remediation exists and is
+	// applied, any later update to it (the rescan's aggregator writes it after
+	// the check passes) makes the operator recreate the MachineConfig, and the
+	// pool would never stop rendering it.
+	if err := f.DeleteScanSettingBindingAndWaitForCleanup(ssb); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.WaitForRemediationToBeDeleted(remName, f.OperatorNamespace); err != nil {
+		t.Fatal(err)
+	}
 	log.Printf("Removing applied machine config\n")
 	mcfgToBeDeleted := rem.Spec.Current.Object.DeepCopy()
 	mcfgToBeDeleted.SetName(rem.GetMcName())
 	err = f.Client.Delete(context.TODO(), mcfgToBeDeleted)
-	if err != nil {
+	if err != nil && !apierrors.IsNotFound(err) {
 		t.Fatal(err)
 	}
 
@@ -909,17 +931,17 @@ func TestAutoRemediate(t *testing.T) {
 	}
 
 	// ..as well as the nodes
-	f.WaitForNodesToBeReady()
+	f.WaitForNodesToBeReadyInPool(pool.Name)
 }
 
 func TestUnapplyRemediation(t *testing.T) {
 	t.Parallel()
 	f := framework.Global
 	pool := f.AcquireTestPool(t)
-	// FIXME, maybe have a func that returns a struct with suite name and scan names?
-	suiteName := "test-unapply-remediation"
-
-	workerScanName := fmt.Sprintf("%s-workers-scan", suiteName)
+	// The remediation MachineConfig is cluster-scoped and named after the scan
+	// (75-<scan>-<rule>), so the scan name carries the test and the lane.
+	suiteName := framework.GetObjNameFromTest(t)
+	workerScanName := fmt.Sprintf("%s-%s", suiteName, pool.Name)
 
 	exampleComplianceSuite := &compv1alpha1.ComplianceSuite{
 		ObjectMeta: metav1.ObjectMeta{
@@ -983,7 +1005,7 @@ func TestUnapplyRemediation(t *testing.T) {
 	// resume the MCP so that the remediation gets applied
 	f.ResumeMachinePool(pool.Name)
 
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1358,8 +1380,8 @@ func TestUpdateRemediation(t *testing.T) {
 	t.Parallel()
 	f := framework.Global
 	pool := f.AcquireTestPool(t)
-	origSuiteName := "test-update-remediation"
-	workerScanName := fmt.Sprintf("%s-e2e-scan", origSuiteName)
+	origSuiteName := framework.GetObjNameFromTest(t)
+	workerScanName := fmt.Sprintf("%s-%s", origSuiteName, pool.Name)
 
 	var (
 		origImage = fmt.Sprintf("%s:%s", brokenContentImagePath, "rem_mod_base")
@@ -1433,7 +1455,7 @@ func TestUpdateRemediation(t *testing.T) {
 	}
 	log.Printf("remediation %s applied\n", workersNoEmptyPassRemName)
 
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		t.Fatalf("failed waiting for nodes to reboot after applying remedation: %s", err)
 	}
@@ -1467,7 +1489,7 @@ func TestUpdateRemediation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		t.Fatalf("failed waiting for nodes to reboot after applying MachineConfig: %s", err)
 	}
@@ -1484,7 +1506,7 @@ func TestUpdateRemediation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		t.Fatalf("failed waiting for nodes to reboot after unapplying MachineConfig: %s", err)
 	}
@@ -1726,7 +1748,7 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	requiredRuleName := prefixName(pbName, requiredRule)
 	requiredVersionRuleName := prefixName(pbName, "version-detect-in-ocp")
 	requiredVariableName := prefixName(pbName, "var-streaming-connection-timeouts")
-	suiteName := "kubelet-remediation-test-suite-node"
+	suiteName := framework.GetObjNameFromTest(t)
 
 	tp := &compv1alpha1.TailoredProfile{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1784,7 +1806,18 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Client.Delete(context.TODO(), ssb)
+	// The KubeletConfig is per pool (compliance-operator-kubelet-<pool>), not
+	// per test, so remove it and let the lane roll back before the lane is
+	// released; otherwise the next test on this lane inherits it.
+	defer func() {
+		if err := f.DeleteScanSettingBindingAndWaitForCleanup(ssb); err != nil {
+			t.Errorf("failed to clean up ScanSettingBinding %s: %s", ssb.Name, err)
+			return
+		}
+		if err := f.DeleteKubeletConfigAndWaitForPool(pool.Name); err != nil {
+			t.Errorf("failed to remove KubeletConfig for pool %s: %s", pool.Name, err)
+		}
+	}()
 
 	// Ensure that all the scans in the suite have finished and are marked as Done
 	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant)
@@ -2507,8 +2540,8 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 	}
 
 	// This test applies an SSH remediation and verifies runtime checks still work
-	suiteName := "test-runtime-ssh-remediation"
-	scanName := fmt.Sprintf("%s-scan", suiteName)
+	suiteName := framework.GetObjNameFromTest(t)
+	scanName := fmt.Sprintf("%s-%s", suiteName, pool.Name)
 
 	suite := &compv1alpha1.ComplianceSuite{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2610,7 +2643,13 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 		}
 	}
 
-	// Clean up any remediations that were applied
+	// Clean up any remediations that were applied. Stop the suite from
+	// auto-applying first: otherwise the suite controller re-applies each
+	// remediation as soon as it's unapplied, and the pool never drops its
+	// MachineConfig.
+	if err := f.DisableSuiteAutoApply(suiteName, f.OperatorNamespace); err != nil {
+		t.Fatalf("failed to disable auto-apply on suite %s: %s", suiteName, err)
+	}
 	for i := range remList.Items {
 		remName := remList.Items[i].Name
 		rem := &compv1alpha1.ComplianceRemediation{}
@@ -2626,7 +2665,7 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 		}
 
 		// Wait for nodes to be ready again
-		if err := f.WaitForNodesToBeReady(); err != nil {
+		if err := f.WaitForNodesToBeReadyInPool(pool.Name); err != nil {
 			t.Logf("Nodes did not become ready after remediation removal: %v", err)
 		}
 	}

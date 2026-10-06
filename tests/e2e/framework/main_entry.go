@@ -94,6 +94,11 @@ func (f *Framework) SetUp() error {
 		return err
 	}
 
+	f.pinOperatorToMasters, err = f.shouldPinOperatorToMasters()
+	if err != nil {
+		return err
+	}
+
 	log.Printf("creating namespaced resources in %s", *f.NamespacedManPath)
 	err = f.createFromYAMLFile(f.NamespacedManPath)
 	if err != nil {
