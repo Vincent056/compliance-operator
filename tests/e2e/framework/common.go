@@ -854,7 +854,7 @@ func (f *Framework) createMachineConfigPoolForNode(n string, node *corev1.Node) 
 	l := fmt.Sprintf("node-role.kubernetes.io/%s", n)
 
 	log.Printf("adding label %s to node %s\n", l, node.Name)
-	if err := f.labelNode(node.Name, l); err != nil {
+	if _, err := f.setPoolRoleLabel(node, l); err != nil {
 		return fmt.Errorf("couldn't label node %s: %w", node.Name, err)
 	}
 
@@ -928,6 +928,44 @@ func (f *Framework) waitForMachineConfigPoolUpdated(n string) error {
 
 	log.Printf("successfully created Machine Config Pool %s\n", n)
 	return nil
+}
+
+// poolRoleLabel matches the node role labels of the test pool lanes ("e2e",
+// "e2e-<n>").
+var poolRoleLabel = regexp.MustCompile(`^node-role\.kubernetes\.io/` + TestPoolName + `(-[0-9]+)?$`)
+
+// setPoolRoleLabel gives node the role label (empty: none) and, in the same
+// patch, removes any other lane role label an earlier run on the same cluster
+// left on it. A node with two lane labels would be in two MachineConfigPools,
+// and a worker left in a lane would be rebooted by that lane's tests.
+func (f *Framework) setPoolRoleLabel(node *corev1.Node, label string) (removedStale bool, err error) {
+	labels := map[string]interface{}{}
+	if label != "" {
+		labels[label] = ""
+	}
+	for k := range node.Labels {
+		if k != label && poolRoleLabel.MatchString(k) {
+			log.Printf("removing stale label %s from node %s", k, node.Name)
+			labels[k] = nil
+			removedStale = true
+		}
+	}
+	if len(labels) == 0 {
+		return false, nil
+	}
+	patch, err := json.Marshal(map[string]interface{}{"metadata": map[string]interface{}{"labels": labels}})
+	if err != nil {
+		return false, err
+	}
+	return removedStale, backoff.RetryNotify(
+		func() error {
+			_, err := f.KubeClient.CoreV1().Nodes().Patch(context.TODO(), node.Name, types.MergePatchType, patch, metav1.PatchOptions{})
+			return err
+		},
+		defaultBackoff,
+		func(err error, interval time.Duration) {
+			log.Printf("failed to label node %s: %s... retrying after %s", node.Name, err, interval)
+		})
 }
 
 // labelNode adds label, with an empty value, to the named node using a JSON

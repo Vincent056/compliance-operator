@@ -13,6 +13,7 @@ import (
 
 	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
 	configv1 "github.com/openshift/api/config/v1"
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -204,6 +205,20 @@ func (f *Framework) startTestPools() error {
 		}
 		go f.readyTestPool(i, f.testPoolNames[i], nodes[i].Name)
 	}
+	// Workers that aren't lanes this time may still be in a lane pool from an
+	// earlier run on the same cluster: take them out, and let MCO move them
+	// back to the worker pool before tests start.
+	for i := now; i < len(nodes); i++ {
+		removedStale, err := f.setPoolRoleLabel(&nodes[i], "")
+		if err != nil {
+			return fmt.Errorf("failed to remove stale lane labels from %s: %w", nodes[i].Name, err)
+		}
+		if removedStale {
+			if err := f.waitForNodeOnPoolConfig(nodes[i].Name, "worker"); err != nil {
+				return err
+			}
+		}
+	}
 	if now < target {
 		go f.addLanesForNewWorkers(now, target, known)
 	}
@@ -317,6 +332,32 @@ func nodeReadyAndConfigured(n *corev1.Node) bool {
 	return ready && a["machineconfiguration.openshift.io/state"] == "Done" &&
 		a["machineconfiguration.openshift.io/currentConfig"] != "" &&
 		a["machineconfiguration.openshift.io/currentConfig"] == a["machineconfiguration.openshift.io/desiredConfig"]
+}
+
+// waitForNodeOnPoolConfig waits until the node runs the pool's current
+// rendered config, for example after it left a lane pool.
+func (f *Framework) waitForNodeOnPoolConfig(nodeName, pool string) error {
+	start := time.Now()
+	err := wait.PollImmediate(machineOperationRetryInterval, machineOperationTimeout, func() (bool, error) {
+		mcp := &mcfgv1.MachineConfigPool{}
+		if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: pool}, mcp); err != nil {
+			return false, nil
+		}
+		node := &corev1.Node{}
+		if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: nodeName}, node); err != nil {
+			return false, nil
+		}
+		a := node.GetAnnotations()
+		want := mcp.Spec.Configuration.Name
+		return want != "" && a["machineconfiguration.openshift.io/currentConfig"] == want &&
+			a["machineconfiguration.openshift.io/desiredConfig"] == want &&
+			a["machineconfiguration.openshift.io/state"] == "Done", nil
+	})
+	if err != nil {
+		return fmt.Errorf("node %s did not move to pool %s's config: %w", nodeName, pool, err)
+	}
+	log.Printf("node %s runs pool %s's config (%s)", nodeName, pool, time.Since(start).Round(time.Second))
+	return nil
 }
 
 // mastersSchedulable reports whether the cluster scheduler lets ordinary pods
