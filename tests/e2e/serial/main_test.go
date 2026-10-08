@@ -2396,7 +2396,10 @@ func TestScanDeprecatedProfile(t *testing.T) {
 	}
 	defer f.Client.Delete(context.TODO(), testScan)
 
-	if err = f.WaitForProfileDeprecatedWarning(t, scanName, fmt.Sprintf("%s-cis-1-4", pbName)); err != nil {
+	// TestScanTailoredProfileExtendsDeprecated can run alongside this test with
+	// a ProfileBundle of the same content, and the operator names the
+	// deprecated Profile of whichever of these bundles it finds first.
+	if err = f.WaitForProfileDeprecatedWarning(t, scanName, "-cis-1-4"); err != nil {
 		t.Fatal(err)
 	}
 
