@@ -361,6 +361,8 @@ func (r *ReconcileComplianceScan) notifyUseOfDeprecatedProfile(instance *compv1a
 		// Profiles, so we look for the Profile in each of them.
 		// We can, but should not, infer the Profile name based on the ComplianceScan name.
 		// Advanced users still could create Suites and Scans with arbitrary names, and that is exactly what we do in our tests.
+		// The suite controller labels the scans it creates for a Profile with that Profile's name,
+		// and we check that Profile first.
 		if err := r.Client.List(context.TODO(), pbs, client.InNamespace(common.GetComplianceOperatorNamespace())); err != nil {
 			logger.Error(err, "Could not list ProfileBundles")
 			return err
@@ -370,7 +372,12 @@ func (r *ReconcileComplianceScan) notifyUseOfDeprecatedProfile(instance *compv1a
 			if pb.Spec.ContentFile == instance.Spec.Content && pb.Spec.ContentImage == instance.Spec.ContentImage {
 				// This is the full profile name,
 				// taking into account the possiblity of an 'upstream-' prefix in the PB.
-				profileNames = append(profileNames, pb.Name+"-"+xccdfProfileName)
+				name := pb.Name + "-" + xccdfProfileName
+				if name == instance.GetLabels()[compv1alpha1.ProfileNameLabel] {
+					profileNames = append([]string{name}, profileNames...)
+				} else {
+					profileNames = append(profileNames, name)
+				}
 			}
 		}
 		if len(profileNames) == 0 {
