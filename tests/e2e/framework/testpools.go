@@ -269,12 +269,14 @@ func (f *Framework) finishTestPools() error {
 // AcquireTestPool checks out an isolated pool lane for a destructive test,
 // blocking until one is free, and returns it when the test ends. Call
 // t.Parallel() before this so lanes are shared across concurrent tests. Waiting
-// tests get lanes in the order they asked.
+// tests get lanes in the order they asked, and only once every
+// scan-phase test has finished.
 func (f *Framework) AcquireTestPool(t *testing.T) *TestPool {
 	t.Helper()
 	if f.TestPools == nil {
 		t.Fatal("no test pool lanes: the suite needs framework.NewFramework(framework.WithTestPools()), SKIP_MCP_SETUP must be unset, and rosa has no MachineConfigPools for them")
 	}
+	f.waitForScanPhase(t)
 	p, wait := f.TestPools.get()
 	if p == nil {
 		select {

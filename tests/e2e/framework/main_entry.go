@@ -37,6 +37,7 @@ func NewFramework(opts ...Option) *Framework {
 	for _, opt := range opts {
 		opt(f)
 	}
+	f.scanPhase = newScanPhase()
 	Global = f
 
 	// This is required because controller-runtime expects its consumers to
