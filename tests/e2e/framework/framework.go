@@ -79,6 +79,10 @@ type Framework struct {
 	// haveSpares is set when spare workers carry SpareRole, so the parallel
 	// scan tests stay off the lane nodes.
 	haveSpares bool
+	// pinOperatorToMasters places the operator Deployment on master nodes, as the
+	// CSV does, so worker reboots in destructive tests don't restart it. Only
+	// suites with lanes set it.
+	pinOperatorToMasters bool
 
 	restMapper *restmapper.DeferredDiscoveryRESTMapper
 

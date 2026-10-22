@@ -257,6 +257,20 @@ func (f *Framework) createFromYAMLString(y string) error {
 		if err != nil {
 			return err
 		}
+		if u, ok := obj.(*unstructured.Unstructured); ok && u.GetKind() == "Deployment" && u.GetName() == "compliance-operator" {
+			switch {
+			case f.haveSpares:
+				if err := pinToSpares(u); err != nil {
+					return fmt.Errorf("failed to pin the operator to the spare workers: %w", err)
+				}
+				log.Printf("pinning the operator to the spare workers (role %s), which the lane tests don't reboot", SpareRole)
+			case f.pinOperatorToMasters:
+				if err := pinToMasters(u); err != nil {
+					return fmt.Errorf("failed to pin the operator to master nodes: %w", err)
+				}
+				log.Printf("pinning the operator to the master nodes, which the lane tests don't reboot")
+			}
+		}
 
 		obj.SetNamespace(f.OperatorNamespace)
 		log.Printf("creating %s %s", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
@@ -266,6 +280,44 @@ func (f *Framework) createFromYAMLString(y string) error {
 		}
 	}
 	return nil
+}
+
+// pinToSpares schedules the operator Deployment on the spare workers. Like the
+// masters they never reboot during the run, and the pods the operator starts
+// for scans (aggregators, platform scans, result servers, profile parsers)
+// inherit its node selector. On the spare workers they don't compete with the
+// control plane, which also runs every master-role scan; with many scan tests
+// in parallel the masters otherwise run out of CPU.
+func pinToSpares(u *unstructured.Unstructured) error {
+	return unstructured.SetNestedStringMap(u.Object, utils.GetNodeRoleSelector(SpareRole),
+		"spec", "template", "spec", "nodeSelector")
+}
+
+// pinToMasters schedules the operator Deployment on the control plane, the same
+// way the OLM bundle (CSV) installs it. The e2e manifests leave it unconstrained,
+// so it lands on a worker and is evicted, restarting the operator mid-test,
+// whenever a destructive test reboots that worker.
+func pinToMasters(u *unstructured.Unstructured) error {
+	if err := unstructured.SetNestedStringMap(u.Object, map[string]string{"node-role.kubernetes.io/master": ""},
+		"spec", "template", "spec", "nodeSelector"); err != nil {
+		return err
+	}
+	return unstructured.SetNestedSlice(u.Object, []interface{}{
+		map[string]interface{}{"key": "node-role.kubernetes.io/master", "operator": "Exists", "effect": "NoSchedule"},
+	}, "spec", "template", "spec", "tolerations")
+}
+
+// shouldPinOperatorToMasters reports whether the cluster has master nodes to pin
+// the operator to. ROSA and other hosted control planes have none.
+func (f *Framework) shouldPinOperatorToMasters() (bool, error) {
+	if f.Platform == "rosa" {
+		return false, nil
+	}
+	nodes, err := f.KubeClient.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: "node-role.kubernetes.io/master"})
+	if err != nil {
+		return false, fmt.Errorf("failed to list master nodes: %w", err)
+	}
+	return len(nodes.Items) > 0, nil
 }
 
 func (f *Framework) WaitForScanCleanup() error {
