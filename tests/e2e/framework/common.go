@@ -682,6 +682,13 @@ func (f *Framework) updateScanSettingsForDebug() error {
 }
 
 func (f *Framework) ensureE2EScanSettings() error {
+	return f.ensureE2EScanSettingsForPool(TestPoolName)
+}
+
+// ensureE2EScanSettingsForPool creates a "<poolName>-default" and
+// "<poolName>-default-auto-apply" ScanSetting whose Roles target poolName, so
+// each parallel test lane scans/remediates only its own pool.
+func (f *Framework) ensureE2EScanSettingsForPool(poolName string) error {
 	if f.Platform == "rosa" {
 		fmt.Printf("bypassing ScanSettings test setup because it's not supported on %s\n", f.Platform)
 		return nil
@@ -695,11 +702,11 @@ func (f *Framework) ensureE2EScanSettings() error {
 
 		ssCopy := ss.DeepCopy()
 		ssCopy.ObjectMeta = metav1.ObjectMeta{
-			Name:      "e2e-" + ssName,
+			Name:      poolName + "-" + ssName,
 			Namespace: f.OperatorNamespace,
 		}
 		ssCopy.Roles = []string{
-			TestPoolName,
+			poolName,
 		}
 		ssCopy.Debug = true
 
@@ -729,12 +736,8 @@ func (f *Framework) deleteScanSettings(name string) error {
 	return nil
 }
 
-func (f *Framework) createMachineConfigPool(n string) error {
-	if f.Platform == "rosa" {
-		fmt.Printf("bypassing MachineConfigPool test setup because it's not supported on %s\n", f.Platform)
-		return nil
-	}
-	// get the worker pool
+// getWorkerNodes returns the nodes currently in the worker MachineConfigPool.
+func (f *Framework) getWorkerNodes() ([]corev1.Node, error) {
 	w := "worker"
 	p := &mcfgv1.MachineConfigPool{}
 	getErr := backoff.RetryNotify(
@@ -752,41 +755,66 @@ func (f *Framework) createMachineConfigPool(n string) error {
 			log.Printf("error while getting MachineConfig pool to create sub-pool from: %s. Retrying after %s", err, interval)
 		})
 	if getErr != nil {
-		return fmt.Errorf("failed to get Machine Config Pool %s to create sub-pool from: %w", w, getErr)
+		return nil, fmt.Errorf("failed to get Machine Config Pool %s to create sub-pool from: %w", w, getErr)
 	}
-
 	nodeList, err := f.getNodesForPool(p)
+	if err != nil {
+		return nil, err
+	}
+	// Never hand out a control-plane node as a reboot lane. Masters carry the
+	// worker role too on compact clusters or when masters are schedulable.
+	var workers []corev1.Node
+	for _, n := range nodeList.Items {
+		if _, ok := n.Labels["node-role.kubernetes.io/master"]; ok {
+			continue
+		}
+		if _, ok := n.Labels["node-role.kubernetes.io/control-plane"]; ok {
+			continue
+		}
+		workers = append(workers, n)
+	}
+	return workers, nil
+}
+
+func (f *Framework) createMachineConfigPool(n string) error {
+	if f.Platform == "rosa" {
+		fmt.Printf("bypassing MachineConfigPool test setup because it's not supported on %s\n", f.Platform)
+		return nil
+	}
+	nodes, err := f.getWorkerNodes()
 	if err != nil {
 		return err
 	}
+	if len(nodes) == 0 {
+		return fmt.Errorf("no worker nodes found to create Machine Config Pool %s from", n)
+	}
 	// pick the first node in the list so we only have a pool of one
-	node := nodeList.Items[0]
+	if err := f.createMachineConfigPoolForNode(n, &nodes[0]); err != nil {
+		return err
+	}
+	return f.waitForMachineConfigPoolUpdated(n)
+}
+
+// createMachineConfigPoolForNode labels the node into pool n's role and creates
+// the pool without waiting for MCO to roll the node into it. Callers creating
+// several pools can create them all first and wait afterwards, since MCO updates
+// distinct pools concurrently.
+func (f *Framework) createMachineConfigPoolForNode(n string, node *corev1.Node) error {
+	// the base pool the sub-pool inherits MachineConfigs from
+	w := "worker"
 
 	// create a new pool with a subset of the nodes
 	l := fmt.Sprintf("node-role.kubernetes.io/%s", n)
 
-	// label nodes
-	nodeCopy := node.DeepCopy()
-	nodeCopy.Labels[l] = ""
-
 	log.Printf("adding label %s to node %s\n", l, node.Name)
-	updateErr := backoff.RetryNotify(
-		func() error {
-			return f.Client.Update(context.TODO(), nodeCopy)
-		},
-		defaultBackoff,
-		func(err error, interval time.Duration) {
-			log.Printf("failed to label node %s: %s... retrying after %s", node.Name, err, interval)
-		})
-	if updateErr != nil {
-		log.Printf("failed to label node %s: %s\n", node.Name, l)
-		return fmt.Errorf("couldn't label node %s: %w", node.Name, updateErr)
+	if _, err := f.setPoolRoleLabel(node, l); err != nil {
+		return fmt.Errorf("couldn't label node %s: %w", node.Name, err)
 	}
 
 	nodeLabel := make(map[string]string)
 	nodeLabel[l] = ""
 	poolLabels := make(map[string]string)
-	poolLabels["pools.operator.machineconfiguration.openshift.io/e2e"] = ""
+	poolLabels["pools.operator.machineconfiguration.openshift.io/"+n] = ""
 	newPool := &mcfgv1.MachineConfigPool{
 		ObjectMeta: metav1.ObjectMeta{Name: n, Labels: poolLabels},
 		Spec: mcfgv1.MachineConfigPoolSpec{
@@ -823,8 +851,12 @@ func (f *Framework) createMachineConfigPool(n string) error {
 		return fmt.Errorf("failed to create Machine Config Pool %s: %w", n, createErr)
 	}
 
-	// wait for pool to come up
-	err = wait.PollImmediate(machineOperationRetryInterval, machineOperationTimeout, func() (bool, error) {
+	return nil
+}
+
+// waitForMachineConfigPoolUpdated waits until MachineConfigPool n reports Updated.
+func (f *Framework) waitForMachineConfigPoolUpdated(n string) error {
+	err := wait.PollImmediate(machineOperationRetryInterval, machineOperationTimeout, func() (bool, error) {
 		pool := mcfgv1.MachineConfigPool{}
 		err := f.Client.Get(context.TODO(), types.NamespacedName{Name: n}, &pool)
 		if err != nil {
@@ -849,6 +881,62 @@ func (f *Framework) createMachineConfigPool(n string) error {
 
 	log.Printf("successfully created Machine Config Pool %s\n", n)
 	return nil
+}
+
+// poolRoleLabel matches the node role labels of the test pool lanes ("e2e",
+// "e2e-<n>") and of the spare workers.
+var poolRoleLabel = regexp.MustCompile(`^node-role\.kubernetes\.io/(` + TestPoolName + `(-[0-9]+)?|` + SpareRole + `)$`)
+
+// setPoolRoleLabel gives node the lane or spare role label and, in the same
+// patch, removes any other lane or spare role label an earlier run on the same
+// cluster left on it. A node with two lane labels would be in two
+// MachineConfigPools, and a spare worker left in a lane would be rebooted by
+// that lane's tests.
+func (f *Framework) setPoolRoleLabel(node *corev1.Node, label string) (removedStale bool, err error) {
+	labels := map[string]interface{}{label: ""}
+	for k := range node.Labels {
+		if k != label && poolRoleLabel.MatchString(k) {
+			log.Printf("removing stale label %s from node %s", k, node.Name)
+			labels[k] = nil
+			removedStale = true
+		}
+	}
+	patch, err := json.Marshal(map[string]interface{}{"metadata": map[string]interface{}{"labels": labels}})
+	if err != nil {
+		return false, err
+	}
+	return removedStale, backoff.RetryNotify(
+		func() error {
+			_, err := f.KubeClient.CoreV1().Nodes().Patch(context.TODO(), node.Name, types.MergePatchType, patch, metav1.PatchOptions{})
+			return err
+		},
+		defaultBackoff,
+		func(err error, interval time.Duration) {
+			log.Printf("failed to label node %s: %s... retrying after %s", node.Name, err, interval)
+		})
+}
+
+// patchNodeLabel sets label to value (nil removes it) on the named node with a
+// JSON merge patch. A patch carries no resourceVersion, so unlike an Update of
+// a listed copy of the node it can't conflict with kubelet or MCO writes.
+func (f *Framework) patchNodeLabel(nodeName, label string, value interface{}) error {
+	patch, err := json.Marshal(map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels": map[string]interface{}{label: value},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return backoff.RetryNotify(
+		func() error {
+			_, err := f.KubeClient.CoreV1().Nodes().Patch(context.TODO(), nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
+			return err
+		},
+		defaultBackoff,
+		func(err error, interval time.Duration) {
+			log.Printf("failed to label node %s: %s... retrying after %s", nodeName, err, interval)
+		})
 }
 
 // validatingAdmissionPolicyExists checks if a ValidatingAdmissionPolicy with the given name exists

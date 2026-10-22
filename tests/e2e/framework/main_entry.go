@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func NewFramework() *Framework {
+func NewFramework(opts ...Option) *Framework {
 	fopts := &frameworkOpts{}
 	fopts.addToFlagSet(flag.CommandLine)
 
@@ -33,6 +33,9 @@ func NewFramework() *Framework {
 	f, err := newFramework(fopts)
 	if err != nil {
 		log.Fatalf("Failed to create framework: %v", err)
+	}
+	for _, opt := range opts {
+		opt(f)
 	}
 	Global = f
 
@@ -79,6 +82,17 @@ func (f *Framework) SetUp() error {
 		return err
 	}
 
+	// Start creating the MachineConfigPool lanes now, if the suite asked for
+	// them (WithTestPools). MCO takes about 30s to roll a node into each new
+	// pool and that doesn't depend on the operator, so it overlaps with the
+	// operator deployment and ProfileBundle parsing below. finishTestPools
+	// joins it once the operator is up. See testpools.go.
+	if f.useTestPools && os.Getenv("SKIP_MCP_SETUP") == "" {
+		if err := f.startTestPools(); err != nil {
+			return fmt.Errorf("failed to set up test pools: %w", err)
+		}
+	}
+
 	err = f.replaceNamespaceFromManifest()
 	if err != nil {
 		return err
@@ -121,14 +135,24 @@ func (f *Framework) SetUp() error {
 		return fmt.Errorf("failed to set scan setting bindings to debug: %w", err)
 	}
 
-	err = f.ensureE2EScanSettings()
-	if err != nil {
-		return fmt.Errorf("failed to configure scan settings for tests: %w", err)
-	}
+	if f.useTestPools {
+		// Wait for the MachineConfigPool lanes started above and create their
+		// ScanSettings, so the destructive/reboot tests can run in parallel,
+		// each against its own pool and node. See testpools.go.
+		err = f.finishTestPools()
+		if err != nil {
+			return fmt.Errorf("failed to set up test pools: %w", err)
+		}
+	} else {
+		err = f.ensureE2EScanSettings()
+		if err != nil {
+			return fmt.Errorf("failed to configure scan settings for tests: %w", err)
+		}
 
-	err = f.createMachineConfigPool("e2e")
-	if err != nil {
-		return fmt.Errorf("failed to create Machine Config Pool %s: %w", "e2e", err)
+		err = f.createMachineConfigPool("e2e")
+		if err != nil {
+			return fmt.Errorf("failed to create Machine Config Pool %s: %w", "e2e", err)
+		}
 	}
 	err = f.createInvalidMachineConfigPool("e2e-invalid")
 	if err != nil {
@@ -173,22 +197,32 @@ func (f *Framework) TearDown() error {
 	if os.Getenv("SKIP_MCP_SETUP") != "" {
 		log.Println("SKIP_MCP_SETUP is set, skipping e2e ScanSettings and MachineConfigPool cleanup")
 	} else {
-		err = f.deleteScanSettings("e2e-default")
-		if err != nil {
-			return err
-		}
-		err = f.deleteScanSettings("e2e-default-auto-apply")
-		if err != nil {
-			return err
-		}
-		// unlabel nodes
-		err = f.restoreNodeLabelsForPool("e2e")
-		if err != nil {
-			return err
-		}
-		err = f.cleanUpMachineConfigPool("e2e")
-		if err != nil {
-			return err
+		if f.useTestPools {
+			// Delete the lanes' ScanSettings. With -restoreTestPools, also move
+			// the lane nodes back to the worker pool and delete the lanes. See
+			// tearDownTestPools.
+			err = f.tearDownTestPools()
+			if err != nil {
+				return err
+			}
+		} else {
+			err = f.deleteScanSettings("e2e-default")
+			if err != nil {
+				return err
+			}
+			err = f.deleteScanSettings("e2e-default-auto-apply")
+			if err != nil {
+				return err
+			}
+			// unlabel nodes
+			err = f.restoreNodeLabelsForPool("e2e")
+			if err != nil {
+				return err
+			}
+			err = f.cleanUpMachineConfigPool("e2e")
+			if err != nil {
+				return err
+			}
 		}
 		// e2e-invalid mcp
 		err = f.cleanUpMachineConfigPool("e2e-invalid")

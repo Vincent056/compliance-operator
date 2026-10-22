@@ -62,6 +62,21 @@ type Framework struct {
 	WatchNamespace    string
 	Platform          string
 
+	// useTestPools makes SetUp shard the e2e pool into lanes (WithTestPools),
+	// and restoreTestPools makes TearDown remove them again (-restoreTestPools).
+	useTestPools     bool
+	restoreTestPools bool
+	// TestPools hands out isolated MachineConfigPool lanes to destructive tests
+	// that run in parallel (see testpools.go). testPoolNames tracks the lanes
+	// created during setup so they can be cleaned up on teardown.
+	TestPools     *laneQueue
+	testPoolNames []string
+	testPoolErrs  chan error
+	operatorReady chan struct{}
+	// haveSpares is set when spare workers carry SpareRole, so the parallel
+	// scan tests stay off the lane nodes.
+	haveSpares bool
+
 	restMapper *restmapper.DeferredDiscoveryRESTMapper
 
 	projectRoot       string
@@ -77,6 +92,9 @@ type Framework struct {
 	stopPodLogs func()
 }
 
+// Option configures a suite's Framework. Pass it to NewFramework.
+type Option func(*Framework)
+
 type frameworkOpts struct {
 	projectRoot       string
 	kubeconfigPath    string
@@ -86,6 +104,7 @@ type frameworkOpts struct {
 	testType          string
 	isLocalOperator   bool
 	cleanupOnError    bool
+	restoreTestPools  bool
 	platform          string
 }
 
@@ -105,6 +124,7 @@ const (
 	CleanupOnErrorFlag    = "cleanupOnError"
 	TestTypeFlag          = "testType"
 	PlatformFlag          = "platform"
+	RestoreTestPoolsFlag  = "restoreTestPools"
 
 	TestOperatorNamespaceEnv = "TEST_OPERATOR_NAMESPACE"
 	TestWatchNamespaceEnv    = "TEST_WATCH_NAMESPACE"
@@ -125,6 +145,10 @@ func (opts *frameworkOpts) addToFlagSet(flagset *flag.FlagSet) {
 			"in which case test resources are automatically cleaned up.")
 	flagset.StringVar(&opts.testType, TestTypeFlag, TestTypeAll,
 		"Defines the type of tests to run. (Options: all, serial, parallel)")
+	flagset.BoolVar(&opts.restoreTestPools, RestoreTestPoolsFlag, false,
+		"If set to true, a suite with test pool lanes moves the lane nodes back to the worker pool and "+
+			"deletes the lanes when it finishes. Workers added for the lanes stay. CI clusters are "+
+			"discarded after the run, so it is off by default.")
 	flagset.StringVar(&opts.platform, PlatformFlag, "openshift",
 		"The type of deployment hosting the tests. Options include \"openshift\" and \"rosa\".")
 }
@@ -181,6 +205,7 @@ func newFramework(opts *frameworkOpts) (*Framework, error) {
 		restMapper:        restMapper,
 		cleanupOnError:    opts.cleanupOnError,
 		testType:          opts.testType,
+		restoreTestPools:  opts.restoreTestPools,
 	}
 	return framework, nil
 }
