@@ -31,7 +31,7 @@ var brokenContentImagePath string
 var contentImagePath string
 
 func TestMain(m *testing.M) {
-	f := framework.NewFramework()
+	f := framework.NewFramework(framework.WithTestPools())
 	err := f.SetUp()
 	if err != nil {
 		log.Fatal(err)
@@ -60,11 +60,11 @@ func TestMain(m *testing.M) {
 
 func TestSuiteScan(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t)
 	suiteName := "test-suite-two-scans"
 	workerScanName := fmt.Sprintf("%s-workers-scan", suiteName)
-	selectWorkers := map[string]string{
-		"node-role.kubernetes.io/worker": "",
-	}
+	// Scan the spare workers, not the lane nodes other tests reboot.
+	selectWorkers := f.WorkerScanSelector()
 
 	masterScanName := fmt.Sprintf("%s-masters-scan", suiteName)
 	selectMasters := map[string]string{
@@ -209,7 +209,9 @@ func TestSuiteScan(t *testing.T) {
 
 func TestScanHasProfileGUID(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t, "ocp4-cis", "ocp4-moderate", "ocp4-moderate-node", "rhcos4-moderate")
 	bindingName := framework.GetObjNameFromTest(t)
+	role := f.WorkerScanRole()
 	tpName := "test-scan-have-profile-guid-tp"
 	// This is the profileGUID for the redhat_openshift_container_platform_4.1 product and xccdf_org.ssgproject.content_profile_moderate profile
 	const profileGUIDOCPModerate = "d625badc-92a1-5438-afd7-19526c26b03c"
@@ -259,6 +261,7 @@ func TestScanHasProfileGUID(t *testing.T) {
 		t.Fatal(createTPErr)
 	}
 	defer f.Client.Delete(context.TODO(), tp)
+	ss := f.WorkerScanSetting(t, bindingName+"-ss")
 	scanSettingBinding := compv1alpha1.ScanSettingBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      bindingName,
@@ -292,7 +295,7 @@ func TestScanHasProfileGUID(t *testing.T) {
 			},
 		},
 		SettingsRef: &compv1alpha1.NamedObjectReference{
-			Name:     "default",
+			Name:     ss.Name,
 			Kind:     "ScanSetting",
 			APIGroup: "compliance.openshift.io/v1alpha1",
 		},
@@ -328,11 +331,11 @@ func TestScanHasProfileGUID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.AssertScanGUIDMatches("ocp4-moderate-node-worker", f.OperatorNamespace, profileGUIDOCPModerateNode)
+	err = f.AssertScanGUIDMatches("ocp4-moderate-node-"+role, f.OperatorNamespace, profileGUIDOCPModerateNode)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.AssertScanGUIDMatches("rhcos4-moderate-worker", f.OperatorNamespace, profileGUIDRHCOSModerate)
+	err = f.AssertScanGUIDMatches("rhcos4-moderate-"+role, f.OperatorNamespace, profileGUIDRHCOSModerate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +357,7 @@ func TestScanHasProfileGUID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.AssertResultsGUIDMatches("ocp4-moderate-node-worker", f.OperatorNamespace, profileGUIDOCPModerateNode)
+	err = f.AssertResultsGUIDMatches("ocp4-moderate-node-"+role, f.OperatorNamespace, profileGUIDOCPModerateNode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +365,7 @@ func TestScanHasProfileGUID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.AssertResultsGUIDMatches("rhcos4-moderate-worker", f.OperatorNamespace, profileGUIDRHCOSModerate)
+	err = f.AssertResultsGUIDMatches("rhcos4-moderate-"+role, f.OperatorNamespace, profileGUIDRHCOSModerate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +389,7 @@ var remediationSuffix = regexp.MustCompile(`-[0-9]+$`)
 // Tests auto-remediation with multiple remediation types simultaneously
 //
 //	        (file-based, audit rules, array values - whichever are non-compliant)
-//	Tests scanning on a subset of nodes (via framework.TestPoolName MachineConfigPool)
+//	Tests scanning on a subset of nodes (the MachineConfigPool of the lane the test gets)
 //	Tests ComplianceRemediation status transitions (Applied → PASS after rescan)
 //	Tests array value remediations (chronyd with multiple NTP servers) and end-to-end workflow
 //
@@ -397,27 +400,41 @@ var remediationSuffix = regexp.MustCompile(`-[0-9]+$`)
 // 4. Verifying remediation status transitions and check results
 // 5. Cleaning up all applied configurations
 func TestAutoRemediate(t *testing.T) {
+	t.Parallel()
 	f := framework.Global
-	// FIXME, maybe have a func that returns a struct with suite name and scan names?
-	suiteName := "test-remediate"
-	scanName := fmt.Sprintf("%s-e2e", suiteName)
+	pool := f.AcquireTestPool(t)
+	// Name everything after the test so CRs can't collide with other tests
+	// running in parallel lanes.
+	suiteName := framework.GetObjNameFromTest(t)
+	scanName := fmt.Sprintf("%s-%s", suiteName, pool.Name)
+
+	// Use a ProfileBundle of its own rather than the shared rhcos4 one, so
+	// concurrent lanes never share content objects.
+	pb, pbErr := f.CreateProfileBundle(suiteName, contentImagePath, framework.RhcosContentFile)
+	if pbErr != nil {
+		t.Fatalf("failed to create ProfileBundle %s: %s", suiteName, pbErr)
+	}
+	defer f.Client.Delete(context.TODO(), pb)
+	if err := f.WaitForProfileBundleStatus(suiteName, compv1alpha1.DataStreamValid); err != nil {
+		t.Fatal(err)
+	}
 
 	// Each of these exercises a different kind of remediation, and a default
 	// cluster fails all of them, so each is expected to produce at least one
 	// ComplianceRemediation.
 	remediatedRules := []compv1alpha1.RuleReferenceSpec{
 		{
-			Name:      "rhcos4-no-direct-root-logins",
+			Name:      fmt.Sprintf("%s-no-direct-root-logins", suiteName),
 			Rationale: "Test file-based remediation",
 		},
 		{
 			// Array value remediation
-			Name:      "rhcos4-chronyd-or-ntpd-specify-multiple-servers",
+			Name:      fmt.Sprintf("%s-chronyd-or-ntpd-specify-multiple-servers", suiteName),
 			Rationale: "Test array value remediation with multiple NTP servers",
 		},
 		{
 			// Different remediation type (audit rules)
-			Name:      "rhcos4-audit-rules-dac-modification-chmod",
+			Name:      fmt.Sprintf("%s-audit-rules-dac-modification-chmod", suiteName),
 			Rationale: "Test audit rule remediation",
 		},
 	}
@@ -457,7 +474,7 @@ func TestAutoRemediate(t *testing.T) {
 			Debug:   true,
 			Timeout: "60m",
 		},
-		Roles: []string{framework.TestPoolName},
+		Roles: []string{pool.Name},
 	}
 	if err := f.Client.Create(context.TODO(), &scanSetting, nil); err != nil {
 		t.Fatalf("failed to create ScanSetting %s: %s", scanSettingName, err)
@@ -528,7 +545,7 @@ func TestAutoRemediate(t *testing.T) {
 		// Get current pool state before waiting for this specific remediation
 		// This ensures we're working with fresh state, especially important when multiple MCs are being applied
 		currentPool := &mcfgv1.MachineConfigPool{}
-		err = f.Client.Get(context.TODO(), types.NamespacedName{Name: framework.TestPoolName}, currentPool)
+		err = f.Client.Get(context.TODO(), types.NamespacedName{Name: pool.Name}, currentPool)
 		if err != nil {
 			t.Fatalf("Failed to get current MachineConfigPool state for remediation %s: %s", rem.Name, err)
 		}
@@ -614,7 +631,7 @@ func TestAutoRemediate(t *testing.T) {
 
 	for i, rem := range appliedRemediations {
 		log.Printf("Unapplying remediation %d/%d: %s\n", i+1, len(appliedRemediations), rem.Name)
-		err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, rem.Name, framework.TestPoolName)
+		err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, rem.Name, pool.Name)
 		if err != nil {
 			t.Fatalf("Failed to unapply remediation %s: %s", rem.Name, err)
 		}
@@ -624,15 +641,17 @@ func TestAutoRemediate(t *testing.T) {
 	log.Printf("Successfully unapplied all remediations and pool has stabilized")
 
 	// ..as well as the nodes
-	f.WaitForNodesToBeReady()
+	f.WaitForNodesToBeReadyInPool(pool.Name)
 }
 
 func TestUnapplyRemediation(t *testing.T) {
+	t.Parallel()
 	f := framework.Global
-	// FIXME, maybe have a func that returns a struct with suite name and scan names?
-	suiteName := "test-unapply-remediation"
-
-	workerScanName := fmt.Sprintf("%s-workers-scan", suiteName)
+	pool := f.AcquireTestPool(t)
+	// The remediation MachineConfig is cluster-scoped and named after the scan
+	// (75-<scan>-<rule>), so the scan name carries the test and the lane.
+	suiteName := framework.GetObjNameFromTest(t)
+	workerScanName := fmt.Sprintf("%s-%s", suiteName, pool.Name)
 
 	exampleComplianceSuite := &compv1alpha1.ComplianceSuite{
 		ObjectMeta: metav1.ObjectMeta{
@@ -649,7 +668,7 @@ func TestUnapplyRemediation(t *testing.T) {
 						ContentImage: contentImagePath,
 						Profile:      "xccdf_org.ssgproject.content_profile_moderate",
 						Content:      framework.RhcosContentFile,
-						NodeSelector: framework.GetPoolNodeRoleSelector(),
+						NodeSelector: pool.NodeRoleSelector(),
 						ComplianceScanSettings: compv1alpha1.ComplianceScanSettings{
 							Debug: true,
 						},
@@ -673,30 +692,30 @@ func TestUnapplyRemediation(t *testing.T) {
 	}
 
 	// Pause the MC so that we have only one reboot
-	err = f.PauseMachinePool(framework.TestPoolName)
+	err = f.PauseMachinePool(pool.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Apply both remediations
 	workersNoRootLoginsRemName := fmt.Sprintf("%s-no-direct-root-logins", workerScanName)
-	err = f.ApplyRemediationAndCheck(f.OperatorNamespace, workersNoRootLoginsRemName, framework.TestPoolName)
+	err = f.ApplyRemediationAndCheck(f.OperatorNamespace, workersNoRootLoginsRemName, pool.Name)
 	if err != nil {
 		log.Printf("WARNING: Got an error while applying remediation '%s': %v\n", workersNoRootLoginsRemName, err)
 	}
 	log.Printf("remediation %s applied", workersNoRootLoginsRemName)
 
 	workersNoEmptyPassRemName := fmt.Sprintf("%s-no-empty-passwords", workerScanName)
-	err = f.ApplyRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, framework.TestPoolName)
+	err = f.ApplyRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, pool.Name)
 	if err != nil {
 		log.Printf("WARNING: Got an error while applying remediation '%s': %v\n", workersNoEmptyPassRemName, err)
 	}
 	log.Printf("remediation %s applied", workersNoEmptyPassRemName)
 
 	// resume the MCP so that the remediation gets applied
-	f.ResumeMachinePool(framework.TestPoolName)
+	f.ResumeMachinePool(pool.Name)
 
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -713,7 +732,7 @@ func TestUnapplyRemediation(t *testing.T) {
 
 	// Revert one remediation. The MC should stay, but its generation should bump
 	log.Printf("reverting remediation %s\n", workersNoEmptyPassRemName)
-	err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, framework.TestPoolName)
+	err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, pool.Name)
 	if err != nil {
 		log.Printf("WARNING: Got an error while unapplying remediation '%s': %v\n", workersNoEmptyPassRemName, err)
 	}
@@ -721,7 +740,7 @@ func TestUnapplyRemediation(t *testing.T) {
 
 	// When we unapply the second remediation, the MC should be deleted, too
 	log.Printf("reverting remediation %s", workersNoRootLoginsRemName)
-	err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, workersNoRootLoginsRemName, framework.TestPoolName)
+	err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, workersNoRootLoginsRemName, pool.Name)
 	if err != nil {
 		log.Printf("WARNING: Got an error while unapplying remediation '%s': %v\n", workersNoEmptyPassRemName, err)
 	}
@@ -860,12 +879,13 @@ func TestInconsistentResult(t *testing.T) {
 
 func TestPlatformAndNodeSuiteScan(t *testing.T) {
 	f := framework.Global
+	// Changes the cluster OAuth config, as does TestTokenRulesPassOauthClientsConfigurable.
+	f.ScanPhaseTest(t, "cluster-oauth")
 	suiteName := "test-suite-two-scans-with-platform"
 
 	workerScanName := fmt.Sprintf("%s-workers-scan", suiteName)
-	selectWorkers := map[string]string{
-		"node-role.kubernetes.io/worker": "",
-	}
+	// Scan the spare workers, not the lane nodes other tests reboot.
+	selectWorkers := f.WorkerScanSelector()
 
 	platformScanName := fmt.Sprintf("%s-platform-scan", suiteName)
 
@@ -1068,9 +1088,11 @@ func TestPlatformAndNodeSuiteScan(t *testing.T) {
 }
 
 func TestUpdateRemediation(t *testing.T) {
+	t.Parallel()
 	f := framework.Global
-	origSuiteName := "test-update-remediation"
-	workerScanName := fmt.Sprintf("%s-e2e-scan", origSuiteName)
+	pool := f.AcquireTestPool(t)
+	origSuiteName := framework.GetObjNameFromTest(t)
+	workerScanName := fmt.Sprintf("%s-%s", origSuiteName, pool.Name)
 
 	var (
 		origImage = fmt.Sprintf("%s:%s", brokenContentImagePath, "rem_mod_base")
@@ -1114,7 +1136,7 @@ func TestUpdateRemediation(t *testing.T) {
 						Profile:      "xccdf_org.ssgproject.content_profile_moderate",
 						Rule:         "xccdf_org.ssgproject.content_rule_no_empty_passwords",
 						Content:      framework.RhcosContentFile,
-						NodeSelector: framework.GetPoolNodeRoleSelector(),
+						NodeSelector: pool.NodeRoleSelector(),
 						ComplianceScanSettings: compv1alpha1.ComplianceScanSettings{
 							Debug: true,
 						},
@@ -1138,13 +1160,13 @@ func TestUpdateRemediation(t *testing.T) {
 	}
 
 	workersNoEmptyPassRemName := fmt.Sprintf("%s-no-empty-passwords", workerScanName)
-	err = f.ApplyRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, framework.TestPoolName)
+	err = f.ApplyRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, pool.Name)
 	if err != nil {
 		log.Printf("WARNING: Got an error while applying remediation '%s': %v", workersNoEmptyPassRemName, err)
 	}
 	log.Printf("remediation %s applied\n", workersNoEmptyPassRemName)
 
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		t.Fatalf("failed waiting for nodes to reboot after applying remedation: %s", err)
 	}
@@ -1173,12 +1195,12 @@ func TestUpdateRemediation(t *testing.T) {
 
 	log.Printf("will remove obsolete data from remediation\n")
 	renderedMcName := fmt.Sprintf("75-%s", workersNoEmptyPassRemName)
-	err = f.RemoveObsoleteRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, renderedMcName, framework.TestPoolName)
+	err = f.RemoveObsoleteRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, renderedMcName, pool.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		t.Fatalf("failed waiting for nodes to reboot after applying MachineConfig: %s", err)
 	}
@@ -1190,12 +1212,12 @@ func TestUpdateRemediation(t *testing.T) {
 	}
 
 	// Finally clean up by removing the remediation and waiting for the nodes to reboot one more time
-	err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, framework.TestPoolName)
+	err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, workersNoEmptyPassRemName, pool.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = f.WaitForNodesToBeReady()
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
 	if err != nil {
 		t.Fatalf("failed waiting for nodes to reboot after unapplying MachineConfig: %s", err)
 	}
@@ -1338,7 +1360,9 @@ func TestVariableTemplate(t *testing.T) {
 }
 
 func TestKubeletConfigRemediation(t *testing.T) {
+	t.Parallel()
 	f := framework.Global
+	pool := f.AcquireTestPool(t)
 	var baselineImage = fmt.Sprintf("%s:%s", brokenContentImagePath, "new_kubeletconfig")
 	const requiredRule = "kubelet-enable-streaming-connections"
 	pbName := framework.GetObjNameFromTest(t)
@@ -1357,7 +1381,9 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	requiredRuleName := prefixName(pbName, requiredRule)
 	requiredVersionRuleName := prefixName(pbName, "version-detect-in-ocp")
 	requiredVariableName := prefixName(pbName, "var-streaming-connection-timeouts")
-	suiteName := "kubelet-remediation-test-suite-node"
+	// The "-node" suffix makes the TailoredProfile, which mixes node and
+	// platform rules, a node profile (see the TailoredProfile controller).
+	suiteName := framework.GetObjNameFromTest(t) + "-node"
 
 	tp := &compv1alpha1.TailoredProfile{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1407,7 +1433,7 @@ func TestKubeletConfigRemediation(t *testing.T) {
 		SettingsRef: &compv1alpha1.NamedObjectReference{
 			APIGroup: "compliance.openshift.io/v1alpha1",
 			Kind:     "ScanSetting",
-			Name:     "e2e-default-auto-apply",
+			Name:     pool.AutoApplyScanSetting,
 		},
 	}
 
@@ -1415,7 +1441,18 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Client.Delete(context.TODO(), ssb)
+	// The KubeletConfig is per pool (compliance-operator-kubelet-<pool>), not
+	// per test, so remove it and let the lane roll back before the lane is
+	// released; otherwise the next test on this lane inherits it.
+	defer func() {
+		if err := f.DeleteScanSettingBindingAndWaitForCleanup(ssb); err != nil {
+			t.Errorf("failed to clean up ScanSettingBinding %s: %s", ssb.Name, err)
+			return
+		}
+		if err := f.DeleteKubeletConfigAndWaitForPool(pool.Name); err != nil {
+			t.Errorf("failed to remove KubeletConfig for pool %s: %s", pool.Name, err)
+		}
+	}()
 
 	// Ensure that all the scans in the suite have finished and are marked as Done
 	err = f.WaitForSuiteScansStatus(f.OperatorNamespace, suiteName, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant)
@@ -1423,13 +1460,12 @@ func TestKubeletConfigRemediation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	scanName := suiteName + "-" + framework.TestPoolName
+	scanName := suiteName + "-" + pool.Name
 
 	// We need to check that the remediation is auto-applied and save
 	// the object so we can delete it later
 	remName := scanName + "-kubelet-enable-streaming-connections"
-	f.WaitForGenericRemediationToBeAutoApplied(remName, f.OperatorNamespace)
-	err = f.WaitForGenericRemediationToBeAutoApplied(remName, f.OperatorNamespace)
+	err = f.WaitForGenericRemediationToBeAutoAppliedInPool(remName, f.OperatorNamespace, pool.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1486,8 +1522,11 @@ func TestKubeletConfigRemediation(t *testing.T) {
 
 func TestRemoveProfileScan(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t, "ocp4-cis", "ocp4-moderate", "ocp4-cis-node")
 	// Bind the new ScanSetting to a Profile
 	bindingName := framework.GetObjNameFromTest(t) + "-binding"
+	role := f.WorkerScanRole()
+	ss := f.WorkerScanSetting(t, framework.GetObjNameFromTest(t)+"-ss")
 	scanSettingBinding := compv1alpha1.ScanSettingBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      bindingName,
@@ -1511,7 +1550,7 @@ func TestRemoveProfileScan(t *testing.T) {
 			},
 		},
 		SettingsRef: &compv1alpha1.NamedObjectReference{
-			Name:     "default",
+			Name:     ss.Name,
 			Kind:     "ScanSetting",
 			APIGroup: "compliance.openshift.io/v1alpha1",
 		},
@@ -1538,7 +1577,7 @@ func TestRemoveProfileScan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := f.AssertScanExists("ocp4-cis-node-worker", f.OperatorNamespace); err != nil {
+	if err := f.AssertScanExists("ocp4-cis-node-"+role, f.OperatorNamespace); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1583,7 +1622,7 @@ func TestRemoveProfileScan(t *testing.T) {
 			log.Printf("Retrying: %s\n", lastErr)
 			return false, nil
 		}
-		if lastErr := f.AssertScanDoesNotExist("ocp4-cis-node-worker", f.OperatorNamespace); lastErr != nil {
+		if lastErr := f.AssertScanDoesNotExist("ocp4-cis-node-"+role, f.OperatorNamespace); lastErr != nil {
 			log.Printf("Retrying: %s\n", lastErr)
 			return false, nil
 		}
@@ -1598,7 +1637,7 @@ func TestRemoveProfileScan(t *testing.T) {
 			}
 			return false, nil
 		}
-		log.Print("Scan ocp4-moderate, ocp4-cis-node-master and ocp4-cis-node-worker do not exist anymore\n")
+		log.Printf("Scan ocp4-moderate, ocp4-cis-node-master and ocp4-cis-node-%s do not exist anymore\n", role)
 		log.Printf("Check %s doesn't exist anymore\n", checkResult.Name)
 		return true, nil
 	})
@@ -1614,6 +1653,7 @@ func TestRemoveProfileScan(t *testing.T) {
 
 func TestScanDeprecatedProfile(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t)
 
 	pbName := framework.GetObjNameFromTest(t)
 	baselineImage := fmt.Sprintf("%s:%s", brokenContentImagePath, "deprecated_profile")
@@ -1638,6 +1678,8 @@ func TestScanDeprecatedProfile(t *testing.T) {
 			Profile:      "xccdf_org.ssgproject.content_profile_cis-1-4",
 			Content:      framework.OcpContentFile,
 			ContentImage: baselineImage,
+			// A node scan; without a selector it would cover the lane nodes.
+			NodeSelector: f.WorkerScanSelector(),
 			ComplianceScanSettings: compv1alpha1.ComplianceScanSettings{
 				Debug: true,
 			},
@@ -1662,7 +1704,9 @@ func TestScanDeprecatedProfile(t *testing.T) {
 }
 
 func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
+	t.Parallel()
 	f := framework.Global
+	pool := f.AcquireTestPool(t)
 
 	baselineImage := fmt.Sprintf("%s:%s", brokenContentImagePath, "runtime_sshd")
 	pbName := framework.GetObjNameFromTest(t)
@@ -1677,8 +1721,8 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 	}
 
 	// This test applies an SSH remediation and verifies runtime checks still work
-	suiteName := "test-runtime-ssh-remediation"
-	scanName := fmt.Sprintf("%s-scan", suiteName)
+	suiteName := framework.GetObjNameFromTest(t)
+	scanName := fmt.Sprintf("%s-%s", suiteName, pool.Name)
 
 	suite := &compv1alpha1.ComplianceSuite{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1696,7 +1740,7 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 						Profile:      "xccdf_org.ssgproject.content_profile_e8",
 						Rule:         "xccdf_org.ssgproject.content_rule_sshd_disable_gssapi_auth",
 						Content:      framework.RhcosContentFile,
-						NodeSelector: framework.GetPoolNodeRoleSelector(),
+						NodeSelector: pool.NodeRoleSelector(),
 						ComplianceScanSettings: compv1alpha1.ComplianceScanSettings{
 							Debug: true,
 						},
@@ -1714,7 +1758,7 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 
 	// Get the MachineConfigPool before remediation
 	poolBeforeRemediation := &mcfgv1.MachineConfigPool{}
-	if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: framework.TestPoolName}, poolBeforeRemediation); err != nil {
+	if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: pool.Name}, poolBeforeRemediation); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1780,7 +1824,13 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 		}
 	}
 
-	// Clean up any remediations that were applied
+	// Clean up any remediations that were applied. Stop the suite from
+	// auto-applying first: otherwise the suite controller re-applies each
+	// remediation as soon as it's unapplied, and the pool never drops its
+	// MachineConfig.
+	if err := f.DisableSuiteAutoApply(suiteName, f.OperatorNamespace); err != nil {
+		t.Fatalf("failed to disable auto-apply on suite %s: %s", suiteName, err)
+	}
 	for i := range remList.Items {
 		remName := remList.Items[i].Name
 		rem := &compv1alpha1.ComplianceRemediation{}
@@ -1791,12 +1841,12 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 			continue
 		}
 		// Unapply the remediation
-		if err := f.UnApplyRemediationAndCheck(f.OperatorNamespace, remName, framework.TestPoolName); err != nil {
+		if err := f.UnApplyRemediationAndCheck(f.OperatorNamespace, remName, pool.Name); err != nil {
 			t.Logf("Could not unapply remediation %s: %v", remName, err)
 		}
 
 		// Wait for nodes to be ready again
-		if err := f.WaitForNodesToBeReady(); err != nil {
+		if err := f.WaitForNodesToBeReadyInPool(pool.Name); err != nil {
 			t.Logf("Nodes did not become ready after remediation removal: %v", err)
 		}
 	}
@@ -1805,9 +1855,16 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 }
 func TestMustGatherImageWorksAsExpected(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t)
 
 	suiteName := framework.GetObjNameFromTest(t)
 	scanSettingBindingName := suiteName
+
+	// must-gather only needs some scans and results: bind TailoredProfiles of
+	// the small E8 profiles, named after this test, on masters and spares.
+	ss := f.WorkerScanSetting(t, suiteName+"-ss")
+	tpPlatform := f.ExtendingTailoredProfile(t, suiteName+"-ocp4-e8", "ocp4-e8")
+	tpNode := f.ExtendingTailoredProfile(t, suiteName+"-rhcos4-e8", "rhcos4-e8")
 
 	// Create ScanSettingBinding to trigger compliance scans
 	scanSettingBinding := &compv1alpha1.ScanSettingBinding{
@@ -1817,18 +1874,18 @@ func TestMustGatherImageWorksAsExpected(t *testing.T) {
 		},
 		Profiles: []compv1alpha1.NamedObjectReference{
 			{
-				Name:     "ocp4-cis",
-				Kind:     "Profile",
+				Name:     tpPlatform.Name,
+				Kind:     "TailoredProfile",
 				APIGroup: "compliance.openshift.io/v1alpha1",
 			},
 			{
-				Name:     "ocp4-cis-node",
-				Kind:     "Profile",
+				Name:     tpNode.Name,
+				Kind:     "TailoredProfile",
 				APIGroup: "compliance.openshift.io/v1alpha1",
 			},
 		},
 		SettingsRef: &compv1alpha1.NamedObjectReference{
-			Name:     "default",
+			Name:     ss.Name,
 			Kind:     "ScanSetting",
 			APIGroup: "compliance.openshift.io/v1alpha1",
 		},
@@ -2230,39 +2287,32 @@ func searchCRDDirectories(crdNames []string, complianceNamespaceDir, timestampDi
 
 func TestResultServerNodeSelectorMaster(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t)
+	name := framework.GetObjNameFromTest(t)
 
-	defaultScanSetting := &compv1alpha1.ScanSetting{}
-	if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: "default", Namespace: f.OperatorNamespace}, defaultScanSetting); err != nil {
-		t.Fatal(err)
-	}
-
-	scanSettingName := "default"
-	if defaultScanSetting.RawResultStorage.NodeSelector == nil || len(defaultScanSetting.RawResultStorage.NodeSelector) == 0 {
-		scanSettingName = framework.GetObjNameFromTest(t) + "-master-ss"
-		customScanSetting := defaultScanSetting.DeepCopy()
-		customScanSetting.ObjectMeta = metav1.ObjectMeta{Name: scanSettingName, Namespace: f.OperatorNamespace}
-		customScanSetting.RawResultStorage.NodeSelector = map[string]string{"node-role.kubernetes.io/master": ""}
-		customScanSetting.RawResultStorage.Tolerations = []corev1.Toleration{
+	// The result servers must follow the ScanSetting's master nodeSelector.
+	ss := f.WorkerScanSetting(t, name+"-master-ss", func(ss *compv1alpha1.ScanSetting) {
+		ss.RawResultStorage.NodeSelector = map[string]string{"node-role.kubernetes.io/master": ""}
+		ss.RawResultStorage.Tolerations = []corev1.Toleration{
 			{Key: "node-role.kubernetes.io/master", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule},
 		}
-		if err := f.Client.Create(context.TODO(), customScanSetting, nil); err != nil {
-			t.Fatalf("failed to create ScanSetting with master nodeSelector: %v", err)
-		}
-		defer f.Client.Delete(context.TODO(), customScanSetting)
-	}
+	})
+	// The node selection doesn't depend on the profile: a TailoredProfile of
+	// the small rhcos4-e8 profile gives this test its own, quick scans.
+	tp := f.ExtendingTailoredProfile(t, name+"-e8", "rhcos4-e8")
 
-	b := framework.GetObjNameFromTest(t) + "-master-ns"
+	b := name + "-master-ns"
 	ssb := compv1alpha1.ScanSettingBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: b, Namespace: f.OperatorNamespace},
 		Profiles: []compv1alpha1.NamedObjectReference{
 			{
-				Name:     "ocp4-high-node",
-				Kind:     "Profile",
+				Name:     tp.Name,
+				Kind:     "TailoredProfile",
 				APIGroup: "compliance.openshift.io/v1alpha1",
 			},
 		},
 		SettingsRef: &compv1alpha1.NamedObjectReference{
-			Name:     scanSettingName,
+			Name:     ss.Name,
 			Kind:     "ScanSetting",
 			APIGroup: "compliance.openshift.io/v1alpha1",
 		},
@@ -2276,7 +2326,7 @@ func TestResultServerNodeSelectorMaster(t *testing.T) {
 		}
 	}()
 
-	if _, err := f.WaitForResultServerPodsWithNodeSelector(map[string]string{"node-role.kubernetes.io/master": ""}); err != nil {
+	if _, err := f.WaitForResultServerPodsWithNodeSelector(map[string]string{"node-role.kubernetes.io/master": ""}, tp.Name+"-master", tp.Name+"-"+f.WorkerScanRole()); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.WaitForSuiteScansStatusAnyResult(f.OperatorNamespace, b, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant, compv1alpha1.ResultCompliant); err != nil {
@@ -2286,39 +2336,33 @@ func TestResultServerNodeSelectorMaster(t *testing.T) {
 
 func TestResultServerNodeSelectorWorker(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t)
+	name := framework.GetObjNameFromTest(t)
 
-	defaultScanSetting := &compv1alpha1.ScanSetting{}
-	if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: "default", Namespace: f.OperatorNamespace}, defaultScanSetting); err != nil {
-		t.Fatal(err)
-	}
+	// The result servers must follow the ScanSetting's worker nodeSelector.
+	ss := f.WorkerScanSetting(t, name+"-worker-ss", func(ss *compv1alpha1.ScanSetting) {
+		// A worker selector, narrowed to the spare workers so the result
+		// servers stay off the lane nodes other tests reboot.
+		sel := f.WorkerScanSelector()
+		sel["node-role.kubernetes.io/worker"] = ""
+		ss.RawResultStorage.NodeSelector = sel
+	})
+	// The node selection doesn't depend on the profile: a TailoredProfile of
+	// the small rhcos4-e8 profile gives this test its own, quick scans.
+	tp := f.ExtendingTailoredProfile(t, name+"-e8", "rhcos4-e8")
 
-	scanSettingName := "default"
-	if defaultScanSetting.RawResultStorage.NodeSelector == nil || len(defaultScanSetting.RawResultStorage.NodeSelector) == 0 {
-		scanSettingName = framework.GetObjNameFromTest(t) + "-worker-ss"
-		customScanSetting := defaultScanSetting.DeepCopy()
-		customScanSetting.ObjectMeta = metav1.ObjectMeta{Name: scanSettingName, Namespace: f.OperatorNamespace}
-		customScanSetting.RawResultStorage.NodeSelector = map[string]string{"node-role.kubernetes.io/worker": ""}
-		if customScanSetting.RawResultStorage.Tolerations == nil {
-			customScanSetting.RawResultStorage.Tolerations = []corev1.Toleration{}
-		}
-		if err := f.Client.Create(context.TODO(), customScanSetting, nil); err != nil {
-			t.Fatalf("failed to create ScanSetting with worker nodeSelector: %v", err)
-		}
-		defer f.Client.Delete(context.TODO(), customScanSetting)
-	}
-
-	b := framework.GetObjNameFromTest(t) + "-worker-ns"
+	b := name + "-worker-ns"
 	ssb := compv1alpha1.ScanSettingBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: b, Namespace: f.OperatorNamespace},
 		Profiles: []compv1alpha1.NamedObjectReference{
 			{
-				Name:     "ocp4-high-node",
-				Kind:     "Profile",
+				Name:     tp.Name,
+				Kind:     "TailoredProfile",
 				APIGroup: "compliance.openshift.io/v1alpha1",
 			},
 		},
 		SettingsRef: &compv1alpha1.NamedObjectReference{
-			Name:     scanSettingName,
+			Name:     ss.Name,
 			Kind:     "ScanSetting",
 			APIGroup: "compliance.openshift.io/v1alpha1",
 		},
@@ -2332,7 +2376,7 @@ func TestResultServerNodeSelectorWorker(t *testing.T) {
 		}
 	}()
 
-	if _, err := f.WaitForResultServerPodsWithNodeSelector(map[string]string{"node-role.kubernetes.io/worker": ""}); err != nil {
+	if _, err := f.WaitForResultServerPodsWithNodeSelector(map[string]string{"node-role.kubernetes.io/worker": ""}, tp.Name+"-master", tp.Name+"-"+f.WorkerScanRole()); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.WaitForSuiteScansStatusAnyResult(f.OperatorNamespace, b, compv1alpha1.PhaseDone, compv1alpha1.ResultNonCompliant, compv1alpha1.ResultCompliant); err != nil {
@@ -2341,16 +2385,20 @@ func TestResultServerNodeSelectorWorker(t *testing.T) {
 }
 
 func TestResultServerTolerationsOnTaintedNode(t *testing.T) {
+	t.Parallel()
 	f := framework.Global
-
-	workerNodes, err := f.GetNodesWithSelector(map[string]string{"node-role.kubernetes.io/worker": ""})
+	// Taint the test's own lane node and keep the scan and its result server
+	// on that lane, so the NoExecute taint doesn't evict pods from a shared
+	// worker and the result server can only be scheduled on the tainted node.
+	pool := f.AcquireTestPool(t)
+	laneNodes, err := f.GetNodesWithSelector(pool.NodeRoleSelector())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(workerNodes) == 0 {
-		t.Skip("No worker nodes available")
+	if len(laneNodes) == 0 {
+		t.Fatalf("no node in test pool %s", pool.Name)
 	}
-	workerNode := &workerNodes[0]
+	workerNode := &laneNodes[0]
 
 	defaultScanSetting := &compv1alpha1.ScanSetting{}
 	if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: "default", Namespace: f.OperatorNamespace}, defaultScanSetting); err != nil {
@@ -2358,24 +2406,22 @@ func TestResultServerTolerationsOnTaintedNode(t *testing.T) {
 	}
 
 	taintKey := "key1"
-	scanSettingName := "default"
-	if defaultScanSetting.RawResultStorage.NodeSelector == nil || len(defaultScanSetting.RawResultStorage.NodeSelector) == 0 {
-		scanSettingName = framework.GetObjNameFromTest(t) + "-worker-ss"
-		customScanSetting := defaultScanSetting.DeepCopy()
-		customScanSetting.ObjectMeta = metav1.ObjectMeta{Name: scanSettingName, Namespace: f.OperatorNamespace}
-		customScanSetting.RawResultStorage.NodeSelector = map[string]string{"node-role.kubernetes.io/worker": ""}
-		customScanSetting.RawResultStorage.Tolerations = []corev1.Toleration{
-			{Effect: corev1.TaintEffectNoSchedule, Key: "node-role.kubernetes.io/master", Operator: corev1.TolerationOpExists},
-			{Effect: corev1.TaintEffectNoExecute, Key: "node.kubernetes.io/not-ready", Operator: corev1.TolerationOpExists, TolerationSeconds: &[]int64{300}[0]},
-			{Effect: corev1.TaintEffectNoExecute, Key: "node.kubernetes.io/unreachable", Operator: corev1.TolerationOpExists, TolerationSeconds: &[]int64{300}[0]},
-			{Effect: corev1.TaintEffectNoSchedule, Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists},
-			{Effect: corev1.TaintEffectNoExecute, Key: taintKey, Value: "value1", Operator: corev1.TolerationOpEqual},
-		}
-		if err := f.Client.Create(context.TODO(), customScanSetting, nil); err != nil {
-			t.Fatalf("failed to create ScanSetting with worker nodeSelector: %v", err)
-		}
-		defer f.Client.Delete(context.TODO(), customScanSetting)
+	scanSettingName := framework.GetObjNameFromTest(t) + "-lane-ss"
+	customScanSetting := defaultScanSetting.DeepCopy()
+	customScanSetting.ObjectMeta = metav1.ObjectMeta{Name: scanSettingName, Namespace: f.OperatorNamespace}
+	customScanSetting.Roles = []string{pool.Name}
+	customScanSetting.RawResultStorage.NodeSelector = pool.NodeRoleSelector()
+	customScanSetting.RawResultStorage.Tolerations = []corev1.Toleration{
+		{Effect: corev1.TaintEffectNoSchedule, Key: "node-role.kubernetes.io/master", Operator: corev1.TolerationOpExists},
+		{Effect: corev1.TaintEffectNoExecute, Key: "node.kubernetes.io/not-ready", Operator: corev1.TolerationOpExists, TolerationSeconds: &[]int64{300}[0]},
+		{Effect: corev1.TaintEffectNoExecute, Key: "node.kubernetes.io/unreachable", Operator: corev1.TolerationOpExists, TolerationSeconds: &[]int64{300}[0]},
+		{Effect: corev1.TaintEffectNoSchedule, Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists},
+		{Effect: corev1.TaintEffectNoExecute, Key: taintKey, Value: "value1", Operator: corev1.TolerationOpEqual},
 	}
+	if err := f.Client.Create(context.TODO(), customScanSetting, nil); err != nil {
+		t.Fatalf("failed to create ScanSetting for test pool %s: %v", pool.Name, err)
+	}
+	defer f.Client.Delete(context.TODO(), customScanSetting)
 
 	taint := corev1.Taint{Key: taintKey, Value: "value1", Effect: corev1.TaintEffectNoExecute}
 	if err := f.TaintNode(workerNode, taint); err != nil {
@@ -2427,7 +2473,7 @@ func TestResultServerTolerationsOnTaintedNode(t *testing.T) {
 		}
 	}()
 
-	resultServerNodeNames, err := f.WaitForResultServerPodsWithNodeSelector(map[string]string{"node-role.kubernetes.io/worker": ""})
+	resultServerNodeNames, err := f.WaitForResultServerPodsWithNodeSelector(pool.NodeRoleSelector(), "ocp4-high-node-"+pool.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2449,6 +2495,7 @@ func TestResultServerTolerationsOnTaintedNode(t *testing.T) {
 
 func TestPrometheusRuleComplianceAlert(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t, "ocp4-pci-dss")
 	defer f.CleanUpRBACForMetricsTest()
 
 	bindingName := "pci-test"
@@ -2706,6 +2753,8 @@ func TestOpenSCAPRuleMetadataPropagation(t *testing.T) {
 
 func TestTokenRulesPassOauthClientsConfigurable(t *testing.T) {
 	f := framework.Global
+	// Changes the cluster OAuth clients; see TestPlatformAndNodeSuiteScan.
+	f.ScanPhaseTest(t, "cluster-oauth")
 	suiteName := framework.GetObjNameFromTest(t)
 	tp := &compv1alpha1.TailoredProfile{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2811,6 +2860,7 @@ func TestTokenRulesPassOauthClientsConfigurable(t *testing.T) {
 // delivery that only fails on the second and later scans on a node.
 func TestKubeletConfigIsScannedAcrossReruns(t *testing.T) {
 	f := framework.Global
+	f.ScanPhaseTest(t)
 	tpName := framework.GetObjNameFromTest(t)
 	bindingName := tpName + "-binding"
 
@@ -2838,6 +2888,7 @@ func TestKubeletConfigIsScannedAcrossReruns(t *testing.T) {
 	}
 	defer f.Client.Delete(context.TODO(), tp)
 
+	ss := f.WorkerScanSetting(t, tpName+"-ss")
 	ssb := &compv1alpha1.ScanSettingBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      bindingName,
@@ -2847,7 +2898,7 @@ func TestKubeletConfigIsScannedAcrossReruns(t *testing.T) {
 			{Name: tpName, Kind: "TailoredProfile", APIGroup: "compliance.openshift.io/v1alpha1"},
 		},
 		SettingsRef: &compv1alpha1.NamedObjectReference{
-			Name: "default", Kind: "ScanSetting", APIGroup: "compliance.openshift.io/v1alpha1",
+			Name: ss.Name, Kind: "ScanSetting", APIGroup: "compliance.openshift.io/v1alpha1",
 		},
 	}
 	if err := f.Client.Create(context.TODO(), ssb, nil); err != nil {
