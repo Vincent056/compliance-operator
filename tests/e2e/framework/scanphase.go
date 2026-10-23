@@ -178,7 +178,9 @@ func (f *Framework) waitForScanPhase(t *testing.T) {
 	p.laneWaiters++
 	defer func() { p.laneWaiters-- }()
 	if par, err := strconv.Atoi(flagValue("test.parallel")); err == nil && p.laneWaiters >= par {
-		log.Printf("WARNING: %d lane tests hold all %d -parallel slots while %d scan-phase tests wait for one; the run is deadlocked, raise -parallel", p.laneWaiters, par, p.registered)
+		// Nothing frees a slot once the lane tests hold them all, so fail
+		// this test now rather than hang until the go test timeout.
+		t.Fatalf("%d lane tests hold all %d -parallel slots while %d scan-phase tests wait for one, so the run would deadlock; raise -parallel", p.laneWaiters, par, p.registered)
 	}
 	start := time.Now()
 	t.Logf("waiting for %d scan-phase tests to finish before taking a lane", p.registered)

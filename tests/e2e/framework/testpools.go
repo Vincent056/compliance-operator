@@ -208,6 +208,9 @@ func (f *Framework) waitForNodeOnPoolConfig(nodeName, pool string) error {
 // a stale SpareRole label when they get their lane label.)
 func (f *Framework) labelSpareWorkers(spares []corev1.Node) error {
 	label := "node-role.kubernetes.io/" + SpareRole
+	if len(spares) == 1 {
+		log.Printf("one spare worker, %s, takes every parallel scan and the pods evicted from rebooting lanes; lower E2E_PARALLEL_POOLS to keep more spares", spares[0].Name)
+	}
 	for i := range spares {
 		removedStale, err := f.setPoolRoleLabel(&spares[i], label)
 		if err != nil {
@@ -292,6 +295,13 @@ func (f *Framework) AcquireTestPool(t *testing.T) *TestPool {
 	t.Logf("acquired test pool lane %s", p.Name)
 	acquired := time.Now()
 	t.Cleanup(func() {
+		// The test's deferred cleanup has run by now. If the test failed, it
+		// may have left a remediation or a KubeletConfig on the lane, so take
+		// the lane out of rotation instead of handing it to the next test.
+		if t.Failed() {
+			f.TestPools.fail(fmt.Errorf("lane %s retired after %s failed", p.Name, t.Name()))
+			return
+		}
 		f.TestPools.put(p)
 		t.Logf("released test pool lane %s after %s", p.Name, time.Since(acquired).Round(time.Second))
 	})

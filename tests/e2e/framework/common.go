@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -763,7 +765,18 @@ func (f *Framework) ensureE2EScanSettingsForPool(poolName string) error {
 		}
 		ssCopy.Debug = true
 
-		if err := f.Client.Create(context.TODO(), ssCopy, nil); err != nil {
+		err := f.Client.Create(context.TODO(), ssCopy, nil)
+		if apierrors.IsAlreadyExists(err) {
+			// An earlier run on a cluster you keep can leave the lane's
+			// ScanSettings behind; reset them to this run's copy.
+			existing := &compv1alpha1.ScanSetting{}
+			key := types.NamespacedName{Name: ssCopy.Name, Namespace: ssCopy.Namespace}
+			if err = f.Client.Get(context.TODO(), key, existing); err == nil {
+				ssCopy.ResourceVersion = existing.ResourceVersion
+				err = f.Client.Update(context.TODO(), ssCopy)
+			}
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -913,7 +926,13 @@ func (f *Framework) waitForMachineConfigPoolUpdated(n string) error {
 		pool := mcfgv1.MachineConfigPool{}
 		err := f.Client.Get(context.TODO(), types.NamespacedName{Name: n}, &pool)
 		if err != nil {
-			log.Printf("failed to find Machine Config Pool %s\n", n)
+			// readyTestPool waits right after creating the pool, so a 404 or
+			// a transient API error doesn't mean the lane is broken.
+			if isTransientError(err) {
+				log.Printf("Machine Config Pool %s not available yet: %v... retrying\n", n, err)
+				return false, nil
+			}
+			log.Printf("failed to find Machine Config Pool %s: %v\n", n, err)
 			return false, err
 		}
 
@@ -934,6 +953,19 @@ func (f *Framework) waitForMachineConfigPoolUpdated(n string) error {
 
 	log.Printf("successfully created Machine Config Pool %s\n", n)
 	return nil
+}
+
+// isTransientError reports whether a failed read can succeed on a retry: a
+// 404 for an object that was just created, a 5xx, or a network error.
+func isTransientError(err error) bool {
+	if apierrors.IsNotFound(err) {
+		return true
+	}
+	var statusErr *apierrors.StatusError
+	var netErr net.Error
+	var urlErr *url.Error
+	return (errors.As(err, &statusErr) && statusErr.Status().Code >= 500) ||
+		errors.As(err, &netErr) || errors.As(err, &urlErr)
 }
 
 // poolRoleLabel matches the node role labels of the test pool lanes ("e2e",
@@ -1998,6 +2030,33 @@ func (f *Framework) WaitForSuiteScansCleanup(suiteOrBindingName, namespace strin
 // DisableSuiteAutoApply turns off automatic remediation on a ComplianceSuite,
 // so remediations a test unapplies aren't immediately re-applied by the suite
 // controller.
+// DisableScanSettingAutoApply turns off auto-apply on a ScanSetting and waits
+// until the suite its binding generates follows. Patching such a suite
+// directly doesn't stick: the binding's controller resets the suite's spec.
+func (f *Framework) DisableScanSettingAutoApply(scanSetting, suite, namespace string) error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		ss := &compv1alpha1.ScanSetting{}
+		if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: scanSetting, Namespace: namespace}, ss); err != nil {
+			return err
+		}
+		if !ss.AutoApplyRemediations {
+			return nil
+		}
+		ss.AutoApplyRemediations = false
+		return f.Client.Update(context.TODO(), ss)
+	})
+	if err != nil {
+		return err
+	}
+	return wait.PollImmediate(RetryInterval, Timeout, func() (bool, error) {
+		s := &compv1alpha1.ComplianceSuite{}
+		if err := f.Client.Get(context.TODO(), types.NamespacedName{Name: suite, Namespace: namespace}, s); err != nil {
+			return false, nil
+		}
+		return !s.Spec.AutoApplyRemediations, nil
+	})
+}
+
 func (f *Framework) DisableSuiteAutoApply(name, namespace string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		suite := &compv1alpha1.ComplianceSuite{}

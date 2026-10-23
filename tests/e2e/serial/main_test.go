@@ -629,6 +629,13 @@ func TestAutoRemediate(t *testing.T) {
 	// to avoid timeout when unapplying multiple remediations simultaneously
 	log.Printf("Unapplying %d remediation(s) one at a time\n", len(appliedRemediations))
 
+	// Stop auto-apply first: the suite controller sets every remediation of
+	// an auto-apply suite back to applied (and pauses the pool) whenever it
+	// reconciles the suite.
+	if err := f.DisableScanSettingAutoApply(scanSettingName, suiteName, f.OperatorNamespace); err != nil {
+		t.Fatalf("failed to disable auto-apply for suite %s: %s", suiteName, err)
+	}
+
 	for i, rem := range appliedRemediations {
 		log.Printf("Unapplying remediation %d/%d: %s\n", i+1, len(appliedRemediations), rem.Name)
 		err = f.UnApplyRemediationAndCheck(f.OperatorNamespace, rem.Name, pool.Name)
@@ -641,7 +648,10 @@ func TestAutoRemediate(t *testing.T) {
 	log.Printf("Successfully unapplied all remediations and pool has stabilized")
 
 	// ..as well as the nodes
-	f.WaitForNodesToBeReadyInPool(pool.Name)
+	err = f.WaitForNodesToBeReadyInPool(pool.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestUnapplyRemediation(t *testing.T) {
@@ -1447,7 +1457,6 @@ func TestKubeletConfigRemediation(t *testing.T) {
 	defer func() {
 		if err := f.DeleteScanSettingBindingAndWaitForCleanup(ssb); err != nil {
 			t.Errorf("failed to clean up ScanSettingBinding %s: %s", ssb.Name, err)
-			return
 		}
 		if err := f.DeleteKubeletConfigAndWaitForPool(pool.Name); err != nil {
 			t.Errorf("failed to remove KubeletConfig for pool %s: %s", pool.Name, err)
@@ -1841,13 +1850,15 @@ func TestRuntimeSSHConfigWithRemediation(t *testing.T) {
 			continue
 		}
 		// Unapply the remediation
+		// A failure here fails the test, which takes the lane out of
+		// rotation (AcquireTestPool) instead of passing it on dirty.
 		if err := f.UnApplyRemediationAndCheck(f.OperatorNamespace, remName, pool.Name); err != nil {
-			t.Logf("Could not unapply remediation %s: %v", remName, err)
+			t.Errorf("Could not unapply remediation %s: %v", remName, err)
 		}
 
 		// Wait for nodes to be ready again
 		if err := f.WaitForNodesToBeReadyInPool(pool.Name); err != nil {
-			t.Logf("Nodes did not become ready after remediation removal: %v", err)
+			t.Errorf("Nodes did not become ready after remediation removal: %v", err)
 		}
 	}
 
