@@ -2,6 +2,7 @@ package framework
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -39,48 +40,54 @@ func (p *TestPool) NodeRoleSelector() map[string]string {
 	return utils.GetNodeRoleSelector(p.Name)
 }
 
-// laneQueue hands out lanes to waiting tests in the order they asked.
+// laneQueue hands out lanes to the tests that ask for one. A lane that is
+// ready, or that a test gave back, waits in free (a slot per lane) until a test
+// takes it. A lane that fails to come up is only counted: tests keep waiting
+// for the others, and gone is closed once every lane has failed.
 type laneQueue struct {
-	mu      sync.Mutex
-	free    []*TestPool
-	waiters []chan *TestPool
+	free chan *TestPool
 	// ready is closed when the first lane is put, for finishTestPools.
 	ready     chan struct{}
 	readyOnce sync.Once
+	gone      chan struct{}
+
+	mu     sync.Mutex
+	lanes  int
+	failed []error
 }
 
-func newLaneQueue() *laneQueue {
-	return &laneQueue{ready: make(chan struct{})}
+func newLaneQueue(lanes int) *laneQueue {
+	return &laneQueue{
+		free:  make(chan *TestPool, lanes),
+		ready: make(chan struct{}),
+		gone:  make(chan struct{}),
+		lanes: lanes,
+	}
 }
 
-// put makes lane p available: it goes straight to the first waiting test, or
-// into the free list when nobody is waiting.
+// put makes lane p available to the next test that asks for one.
 func (q *laneQueue) put(p *TestPool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
 	q.readyOnce.Do(func() { close(q.ready) })
-	if len(q.waiters) == 0 {
-		q.free = append(q.free, p)
-		return
-	}
-	w := q.waiters[0]
-	q.waiters = q.waiters[1:]
-	w <- p
+	q.free <- p
 }
 
-// get returns a free lane right away, or queues the caller and returns the
-// channel its lane will arrive on.
-func (q *laneQueue) get() (*TestPool, chan *TestPool) {
+// fail records a lane that couldn't be set up, and closes gone when it was the
+// last one that could have come up.
+func (q *laneQueue) fail(err error) {
+	log.Printf("test pool lane failed: %v", err)
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.free) > 0 {
-		p := q.free[0]
-		q.free = q.free[1:]
-		return p, nil
+	q.failed = append(q.failed, err)
+	if len(q.failed) == q.lanes {
+		close(q.gone)
 	}
-	w := make(chan *TestPool, 1)
-	q.waiters = append(q.waiters, w)
-	return nil, w
+}
+
+// err says why no lane came up, once gone is closed.
+func (q *laneQueue) err() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return errors.Join(q.failed...)
 }
 
 // WithTestPools makes SetUp shard the e2e pool into lanes, for a suite whose
@@ -156,8 +163,7 @@ func (f *Framework) startTestPools() error {
 	// available instead of waiting for all of them. A lane's ScanSettings copy
 	// the operator's defaults, so they're created after finishTestPools reports
 	// the operator is up.
-	f.TestPools = newLaneQueue()
-	f.testPoolErrs = make(chan error, lanes)
+	f.TestPools = newLaneQueue(lanes)
 	f.operatorReady = make(chan struct{})
 	for i, name := range f.testPoolNames {
 		if err := f.createMachineConfigPoolForNode(name, &nodes[i]); err != nil {
@@ -225,12 +231,12 @@ func (f *Framework) labelSpareWorkers(spares []corev1.Node) error {
 func (f *Framework) readyTestPool(i int, name, node string) {
 	start := time.Now()
 	if err := f.waitForMachineConfigPoolUpdated(name); err != nil {
-		f.testPoolErrs <- fmt.Errorf("failed to create test pool %s: %w", name, err)
+		f.TestPools.fail(fmt.Errorf("failed to create test pool %s: %w", name, err))
 		return
 	}
 	<-f.operatorReady
 	if err := f.ensureE2EScanSettingsForPool(name); err != nil {
-		f.testPoolErrs <- fmt.Errorf("failed to create scan settings for test pool %s: %w", name, err)
+		f.TestPools.fail(fmt.Errorf("failed to create scan settings for test pool %s: %w", name, err))
 		return
 	}
 	f.TestPools.put(&TestPool{
@@ -261,30 +267,27 @@ func (f *Framework) finishTestPools() error {
 	select {
 	case <-f.TestPools.ready:
 		return nil
-	case err := <-f.testPoolErrs:
-		return err
+	case <-f.TestPools.gone:
+		return f.TestPools.err()
 	}
 }
 
 // AcquireTestPool checks out an isolated pool lane for a destructive test,
 // blocking until one is free, and returns it when the test ends. Call
-// t.Parallel() before this so lanes are shared across concurrent tests. Waiting
-// tests get lanes in the order they asked, and only once every
-// scan-phase test has finished.
+// t.Parallel() before this so lanes are shared across concurrent tests. A
+// waiting test gets the next lane that comes up or is given back, once every
+// scan-phase test has finished, and fails only if every lane failed to come up.
 func (f *Framework) AcquireTestPool(t *testing.T) *TestPool {
 	t.Helper()
 	if f.TestPools == nil {
 		t.Fatal("no test pool lanes: the suite needs framework.NewFramework(framework.WithTestPools()), SKIP_MCP_SETUP must be unset, and rosa has no MachineConfigPools for them")
 	}
 	f.waitForScanPhase(t)
-	p, wait := f.TestPools.get()
-	if p == nil {
-		select {
-		case p = <-wait:
-		case err := <-f.testPoolErrs:
-			f.testPoolErrs <- err // let other waiting tests see it too
-			t.Fatalf("no test pool lane available: %s", err)
-		}
+	var p *TestPool
+	select {
+	case p = <-f.TestPools.free:
+	case <-f.TestPools.gone:
+		t.Fatalf("no test pool lane available: %s", f.TestPools.err())
 	}
 	t.Logf("acquired test pool lane %s", p.Name)
 	acquired := time.Now()

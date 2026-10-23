@@ -71,7 +71,6 @@ type Framework struct {
 	// created during setup so they can be cleaned up on teardown.
 	TestPools     *laneQueue
 	testPoolNames []string
-	testPoolErrs  chan error
 	operatorReady chan struct{}
 	// scanPhase keeps the parallel scan tests apart from each other and from
 	// the lane tests (see scanphase.go).
