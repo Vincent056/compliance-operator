@@ -1,5 +1,5 @@
-ARG CO_OLD_VERSION="1.9.2"
-ARG CO_NEW_VERSION="1.10.0"
+ARG CO_OLD_VERSION="1.10.0"
+ARG CO_NEW_VERSION="1.10.1"
 
 FROM registry.redhat.io/openshift/golang-builder:v1.26.10-202610221152.p2.gedd1cdd.assembly.stream.el9 as builder
 
